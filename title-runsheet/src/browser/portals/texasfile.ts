@@ -29,6 +29,8 @@ const SELECTORS = {
   surveySectionInput: 'input#Section', // TODO verify
   surveyBlockInput: 'input#Block', // TODO verify
   surveyTownshipInput: 'input#Township', // TODO verify (Howard Co. uses "T1S"-style abstracts)
+  tractInput: 'input#Tract', // TODO verify — Howard Co. subdivided-tract field may not exist on TexasFile;
+                              // if absent, leave tractNumbers unset here and filter client-side with hitTouchesTract().
   searchSubmit: 'button#SearchButton', // TODO verify
   resultsTableRows: 'table#SearchResults tbody tr', // TODO verify
   resultInstrumentNumber: '.instrument-number', // TODO verify, scoped within a row
@@ -36,6 +38,7 @@ const SELECTORS = {
   resultRecordingDate: '.recording-date',
   resultGrantor: '.grantor',
   resultGrantee: '.grantee',
+  resultLegalDescription: '.legal-description', // TODO verify — may require opening a detail view per hit instead
   resultDownloadLink: 'a.download-doc', // TODO verify
 };
 
@@ -82,6 +85,16 @@ export const texasFileDriver: PortalDriver = {
     if (query.surveyBlock) await page.fill(SELECTORS.surveyBlockInput, query.surveyBlock);
     if (query.surveyTownship) await page.fill(SELECTORS.surveyTownshipInput, query.surveyTownship);
 
+    // Only the first tract number goes in a native field, if TexasFile even
+    // has one for Howard Co.; multiple tracts (290, 497, ...) are searched
+    // broadly on section/block/township and then filtered client-side below
+    // with hitTouchesTract(), since a single native field can't hold a list.
+    if (query.tractNumbers?.length === 1) {
+      await page.fill(SELECTORS.tractInput, query.tractNumbers[0]).catch(() => {
+        // No native tract field on this portal — fall back to post-filtering.
+      });
+    }
+
     await Promise.all([
       page.waitForLoadState('networkidle'),
       page.click(SELECTORS.searchSubmit),
@@ -98,6 +111,7 @@ export const texasFileDriver: PortalDriver = {
       const recordingDateText = await row.locator(SELECTORS.resultRecordingDate).textContent().catch(() => null);
       const grantor = await row.locator(SELECTORS.resultGrantor).textContent().catch(() => null);
       const grantee = await row.locator(SELECTORS.resultGrantee).textContent().catch(() => null);
+      const legalDescription = await row.locator(SELECTORS.resultLegalDescription).textContent().catch(() => null);
 
       hits.push({
         instrumentNumber: instrumentNumber?.trim() ?? null,
@@ -105,6 +119,7 @@ export const texasFileDriver: PortalDriver = {
         recordingDate: parseDate(recordingDateText),
         grantor: grantor?.trim() ?? null,
         grantee: grantee?.trim() ?? null,
+        legalDescription: legalDescription?.trim() ?? null,
         handle: `row:${i}`,
       });
     }

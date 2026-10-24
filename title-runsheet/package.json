@@ -18,7 +18,8 @@
     "agent:runsheet": "tsx src/cli.ts run runsheet",
     "agent:report": "tsx src/cli.ts run report",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "smoke": "tsx src/smoke.ts"
+    "smoke": "tsx src/smoke.ts",
+    "retrieve:tracts": "tsx src/standalone/retrieveInstruments.ts"
   },
   "dependencies": {
     "csv-stringify": "^6.5.1",
