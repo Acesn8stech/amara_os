@@ -52,6 +52,16 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
     for (const a of (p.api8_list as string[] | undefined) ?? []) producingIds.add(a);
   }
   const wellProducing = (w: WellRecord) => { const a = api8(w.api_no); return (a !== null && producingIds.has(a)) || (!!w.api_no && producingIds.has(w.api_no)) || (!!w.source_record_id && producingIds.has(w.source_record_id)); };
+  // Wells RRC ties to a lease (any month, any volume) and the statuses UL reports per API (the two UL well layers can differ).
+  const linkedApis = new Set<string>(); for (const p of inp.production) for (const a of (p.api8_list as string[] | undefined) ?? []) linkedApis.add(a);
+  const okStatus = new Set(cfg.unlinkedWellOkStatuses.map((x) => x.toUpperCase()));
+  const statusesByApi = new Map<string, Set<string>>();
+  for (const w of inp.wells) { const a = api8(w.api_no); if (!a || !w.status) continue; (statusesByApi.get(a) ?? statusesByApi.set(a, new Set()).get(a)!).add(String(w.status).toUpperCase()); }
+  const verifiable = (w: WellRecord) => {
+    const a = api8(w.api_no); if (!a) return false; // no usable API: cannot be checked
+    if (linkedApis.has(a)) return true;
+    const st = statusesByApi.get(a); return !!st && st.size > 0 && [...st].every((x) => okStatus.has(x));
+  };
   const out: Candidate[] = [];
 
   for (const sec of inp.sections) {
@@ -81,7 +91,10 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
     }
     if (inp.permits.some((p) => !p.geom && norm(p.county) === norm(sec.county))) reasons.push('PERMITS_WITHOUT_GEOMETRY');
     reasons.push('GLO_NOT_CONNECTED'); // coverage gap, informational — status unchanged
+    const unverifiable = inside.filter((w) => !verifiable(w));
+    if (unverifiable.length) { reasons.push('WELL_NO_PRODUCTION_LINK'); unverifiable.forEach(ref); }
     let status: CandidateStatus = CANDIDATE_STATUS;
+    if (unverifiable.length) { status = 'HOLD'; reasons.push('HOLD:UNVERIFIABLE_WELL'); }
     // A lease we cannot classify may be active. Never present such a tract as a clean candidate (Celilo / UNVERIFIED over approximation).
     if (reasons.includes('LEASE_STATUS_UNKNOWN_OVERLAP')) { status = 'HOLD'; reasons.push('HOLD:UNKNOWN_LEASE_STATUS'); }
     if (stale.length) { status = 'HOLD'; reasons.push('STALE_SOURCE', ...stale.map((s) => `STALE:${s}`)); }

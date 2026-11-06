@@ -117,7 +117,13 @@ export async function pullPdq(src: { wellCompletion: Lines; leaseCycle: Lines },
   const linked = new Set<string>(); for (const apis of map.values()) for (const a of apis) linked.add(a);
   notes.push(`PDQ: ${map.size} RRC leases link to ${linked.size} of ${o.wantedApi8.size} wanted wells (${o.wantedApi8.size - linked.size} wanted wells have no RRC lease link)`);
   const { records, scanned, skippedZero } = await pdqProduction(src.leaseCycle, map, o);
-  notes.push(`PDQ: scanned ${scanned} lease-month rows; kept ${records.length} lease-months with production > 0 (months >= ${o.cutoffYm}); ${skippedZero} zero/blank rows for linked leases not stored`);
+  notes.push(`PDQ: scanned ${scanned} lease-month rows; kept ${records.length} lease-months with production > 0 (plus ${map.size} lease-to-well link records) (months >= ${o.cutoffYm}); ${skippedZero} zero/blank rows for linked leases not stored`);
+  // Link records (month NULL, volumes NULL): which of our wells RRC ties to a lease, so "linked but not producing" is distinguishable from "no RRC link".
+  for (const [key, apis] of map) records.push({
+    entity_type: 'production_monthly', source_name: 'RRC', source_url: o.sourceUrl, source_layer: 'production', source_record_id: `${key}:LINK`, source_updated_at: o.sourceUpdatedAt,
+    retrieved_at: o.now, geom: null, well_or_lease_id: key, lease_key: key, api8_list: apis, month: null, oil_bbl: null, gas_mcf: null, cond_bbl: null, csgd_mcf: null,
+    raw: { link: 'OG_WELL_COMPLETION', lease_key: key },
+  } as BaseRecord);
   const layer: LayerPull = { layer: 'production', url: o.sourceUrl, entity_type: 'production_monthly', skipped_unchanged: false, source_updated_at: o.sourceUpdatedAt, records, unmapped: [], fields_discovered: CYCLE_COLS };
   return { source: 'RRC', state: 'OK', layers: [layer], notes };
 }

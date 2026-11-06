@@ -308,7 +308,9 @@ test('PDQ: reads by column name, joins lease->API->our wells, windows by month, 
     '012345}O}08}202606}150}}}0}x', '012345}O}08}201001}999}}}0}x', '999999}O}08}202606}500}}}0}x', '012345}O}08}202607}0}0}0}0}x'];
   const o = { wantedApi8: new Set(['47536324']), cutoffYm: '202501', now: NOW, sourceUrl: 'https://rrc/pdq', sourceUpdatedAt: null };
   const r = await pullPdq({ wellCompletion: wc, leaseCycle: lc }, o);
-  const recs = r.layers[0].records as BaseRecord[];
+  const all = r.layers[0].records as BaseRecord[];
+  const recs = all.filter((x) => x.month !== null);
+  assert.equal(all.length - recs.length, 1, 'one lease-to-well link record (month NULL)');
   assert.equal(recs.length, 1, 'old month, unrelated lease and the all-zero month are not stored');
   assert.deepEqual(recs.map((x) => [x.well_or_lease_id, x.month, x.oil_bbl, x.api8_list]), [['O:08:012345', '2026-06-01', 150, ['47536324']]]);
   assert.match(r.notes.join(), /1 zero\/blank rows/);
@@ -349,4 +351,18 @@ test('FileStore: shards state per layer, round-trips, and migrates a legacy stat
   assert.equal((await b.getPromoted('UL', 'WellSHL')).length, 2); assert.equal((await b.getPromoted('UL', 'OG_Lease')).length, 1);
   assert.equal((await b.getRuns()).length, 1); assert.equal(await b.getLayerEdit('u'), 'x');
   assert.ok(readFileSync(join(dir, 'state.d', 'meta.json'), 'utf8').length < 5000, 'meta stays small');
+});
+
+test('candidates: a well with no RRC link holds the tract unless it is plugged; linked-but-idle wells are fine', () => {
+  const w = (id: string, api: string | null, status: string | null, layer = 'Wellbore') => ({ entity_type: 'well', source_name: 'UL', source_url: 'u', source_layer: layer, source_record_id: id,
+    source_updated_at: null, retrieved_at: NOW, raw: {}, geom: { type: 'Point', coordinates: [-103.95, 31.05] }, api_no: api, status, county: 'Reeves' }) as BaseRecord;
+  const link = { entity_type: 'production_monthly', source_name: 'RRC', source_url: 'u', source_layer: 'production', source_record_id: 'k:LINK', source_updated_at: null, retrieved_at: NOW, raw: {},
+    geom: null, well_or_lease_id: 'O:08:1', api8_list: ['47536324'], month: null, oil_bbl: null, gas_mcf: null } as BaseRecord;
+  const run = (wells: BaseRecord[], production: BaseRecord[] = [link]) => buildCandidates(inputs({ wells, production }), cfg(), NOW)[0];
+  assert.equal(run([w('1', '4247536324', 'PR')]).status, CANDIDATE_STATUS, 'linked to a lease but no production in window: verifiable');
+  const bad = run([w('2', '4200000001', 'PR')]); assert.equal(bad.status, 'HOLD'); assert.ok(bad.reason_codes.includes('WELL_NO_PRODUCTION_LINK'));
+  assert.equal(run([w('3', '4200000002', 'PA')]).status, CANDIDATE_STATUS, 'unlinked but plugged');
+  assert.equal(run([w('4', '4200000003', null, 'WellSHL'), w('5', '4200000003', 'PA')]).status, CANDIDATE_STATUS, 'status taken across both UL layers for the same API');
+  assert.equal(run([w('6', '4200000004', null, 'WellSHL')]).status, 'HOLD', 'unlinked with no status at all');
+  assert.equal(run([w('7', null, 'PA')]).status, 'HOLD', 'no usable API');
 });

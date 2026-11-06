@@ -13,6 +13,8 @@ export interface OpenAcreageConfig {
   productionMonths: number; // Y
   offsetMiles: number; // Z
   recentExpiredDays: number;
+  /** Well statuses (UL codes) that may stay unlinked to RRC production without holding a tract. PA = plugged & abandoned: Scott to confirm. */
+  unlinkedWellOkStatuses: string[];
   maxDropRatio: number; // >20% drop halts promote
   bbox: { minLon: number; minLat: number; maxLon: number; maxLat: number }; // TX/NM envelope
   killSwitchAll: boolean;
@@ -26,6 +28,7 @@ export const DEFAULT_CONFIG: OpenAcreageConfig = {
   productionMonths: 12,
   offsetMiles: 2,
   recentExpiredDays: 365,
+  unlinkedWellOkStatuses: ['PA'],
   maxDropRatio: 0.2,
   // Generous TX + NM envelope (WGS84): TX/NM span lon -109.05..-93.5, lat 25.8..37.0
   bbox: { minLon: -109.06, minLat: 25.8, maxLon: -93.5, maxLat: 37.01 },
