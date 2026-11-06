@@ -88,31 +88,35 @@ export async function pdqLeaseApiMap(lines: Lines, wanted: Set<string>): Promise
 
 export interface PdqOpts { wantedApi8: Set<string>; cutoffYm: string; now: string; sourceUrl: string; sourceUpdatedAt: string | null }
 
-/** Monthly production attributed to each of our wells on a producing lease (lease-level volumes: not allocated per well). */
-export async function pdqProduction(lines: Lines, leaseApis: Map<string, string[]>, o: PdqOpts): Promise<{ records: BaseRecord[]; scanned: number }> {
-  const records: BaseRecord[] = []; let scanned = 0;
+/**
+ * One record per lease-month carrying the 8-digit APIs of OUR wells on that lease (api8_list). Volumes are lease-level, not allocated per well.
+ * Rows with no volume above zero are counted but not stored (the candidate rule only needs "produced > 0"); blank volumes stay NULL.
+ */
+export async function pdqProduction(lines: Lines, leaseApis: Map<string, string[]>, o: PdqOpts): Promise<{ records: BaseRecord[]; scanned: number; skippedZero: number }> {
+  const records: BaseRecord[] = []; let scanned = 0; let skippedZero = 0;
   for await (const r of rows(lines, CYCLE_COLS, PDQ_LEASE_CYCLE)) {
     scanned++;
     if (r.CYCLE_YEAR_MONTH < o.cutoffYm) continue;
     const apis = leaseApis.get(leaseKey(r)); if (!apis) continue;
     const ym = r.CYCLE_YEAR_MONTH; if (!/^\d{6}$/.test(ym)) continue;
-    const month = `${ym.slice(0, 4)}-${ym.slice(4, 6)}-01`;
-    for (const a of apis) records.push({
-      entity_type: 'production_monthly', source_name: 'RRC', source_url: o.sourceUrl, source_layer: 'production', source_record_id: `${a}:${leaseKey(r)}:${ym}`,
-      source_updated_at: o.sourceUpdatedAt, retrieved_at: o.now, geom: null, well_or_lease_id: a, lease_key: leaseKey(r), month,
-      oil_bbl: vol(r.LEASE_OIL_PROD_VOL), gas_mcf: vol(r.LEASE_GAS_PROD_VOL), cond_bbl: vol(r.LEASE_COND_PROD_VOL), csgd_mcf: vol(r.LEASE_CSGD_PROD_VOL),
-      raw: { ...r, attribution: 'lease-level volume attributed to every listed well on the lease' },
+    const oil = vol(r.LEASE_OIL_PROD_VOL); const gas = vol(r.LEASE_GAS_PROD_VOL); const cond = vol(r.LEASE_COND_PROD_VOL); const csgd = vol(r.LEASE_CSGD_PROD_VOL);
+    if (![oil, gas, cond, csgd].some((v) => v !== null && v > 0)) { skippedZero++; continue; }
+    const key = leaseKey(r);
+    records.push({
+      entity_type: 'production_monthly', source_name: 'RRC', source_url: o.sourceUrl, source_layer: 'production', source_record_id: `${key}:${ym}`,
+      source_updated_at: o.sourceUpdatedAt, retrieved_at: o.now, geom: null, well_or_lease_id: key, lease_key: key, api8_list: apis, month: `${ym.slice(0, 4)}-${ym.slice(4, 6)}-01`,
+      oil_bbl: oil, gas_mcf: gas, cond_bbl: cond, csgd_mcf: csgd, raw: r,
     } as BaseRecord);
   }
-  return { records, scanned };
+  return { records, scanned, skippedZero };
 }
 
 export async function pullPdq(src: { wellCompletion: Lines; leaseCycle: Lines }, o: PdqOpts): Promise<ConnectorResult> {
   const notes: string[] = [];
   const map = await pdqLeaseApiMap(src.wellCompletion, o.wantedApi8);
   notes.push(`PDQ: ${map.size} RRC leases link to ${o.wantedApi8.size} wanted wells`);
-  const { records, scanned } = await pdqProduction(src.leaseCycle, map, o);
-  notes.push(`PDQ: scanned ${scanned} lease-month rows, kept ${records.length} for months >= ${o.cutoffYm}`);
+  const { records, scanned, skippedZero } = await pdqProduction(src.leaseCycle, map, o);
+  notes.push(`PDQ: scanned ${scanned} lease-month rows; kept ${records.length} lease-months with production > 0 (months >= ${o.cutoffYm}); ${skippedZero} zero/blank rows for linked leases not stored`);
   const layer: LayerPull = { layer: 'production', url: o.sourceUrl, entity_type: 'production_monthly', skipped_unchanged: false, source_updated_at: o.sourceUpdatedAt, records, unmapped: [], fields_discovered: CYCLE_COLS };
   return { source: 'RRC', state: 'OK', layers: [layer], notes };
 }

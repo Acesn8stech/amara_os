@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { readFileSync, writeFileSync, writeSync, openSync, closeSync, mkdirSync, existsSync, renameSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { BaseRecord, Candidate, ChangeEvent, EntityType, Rejected, SyncRun } from './types.ts';
 
 export interface Store {
@@ -46,18 +46,60 @@ export class MemoryStore implements Store {
   async setLayerEdit(u: string, iso: string | null) { this.state.layerEdit[u] = iso; }
 }
 
-/** Key-less local mode for Hermes/dev: JSON file persisted after each mutation. */
+function writeJsonArray(path: string, arr: unknown[]) {
+  // Chunked: a single JSON.stringify of a big array exceeds V8's max string length (~512 MB).
+  mkdirSync(dirname(path), { recursive: true });
+  const fd = openSync(`${path}.tmp`, 'w');
+  try {
+    writeSync(fd, '[');
+    for (let i = 0; i < arr.length; i += 500) {
+      const chunk = arr.slice(i, i + 500).map((x) => JSON.stringify(x)).join(',');
+      writeSync(fd, (i ? ',' : '') + chunk);
+    }
+    writeSync(fd, ']');
+  } finally { closeSync(fd); }
+  renameSync(`${path}.tmp`, path);
+}
+const readJson = <T>(path: string, fallback: T): T => (existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as T) : fallback);
+
+/**
+ * Key-less local mode for Hermes/dev. State is sharded under <dir>/state.d/: one file per promoted layer plus small meta/changes/rejected/history
+ * files, each rewritten only when it changes. A legacy single-file state.json is migrated automatically (and renamed .migrated).
+ */
 export class FileStore extends MemoryStore {
-  private path: string;
+  private dir: string;
+  private legacy: string | null;
   constructor(path: string) {
-    super(existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as State) : undefined);
-    this.path = path;
+    super(FileStore.load(path));
+    this.dir = join(dirname(path), 'state.d');
+    this.legacy = existsSync(path) && !existsSync(join(this.dir, 'meta.json')) ? path : null;
+    if (this.legacy) { this.flushAll(); renameSync(this.legacy, `${this.legacy}.migrated`); this.legacy = null; }
   }
-  flush() { mkdirSync(dirname(this.path), { recursive: true }); writeFileSync(this.path, JSON.stringify(this.state)); }
-  async promoteLayer(...a: Parameters<MemoryStore['promoteLayer']>) { await super.promoteLayer(...a); this.flush(); }
-  async saveRun(r: SyncRun) { await super.saveRun(r); this.flush(); }
-  async saveChanges(c: ChangeEvent[]) { await super.saveChanges(c); this.flush(); }
-  async replaceCandidates(c: Candidate[]) { await super.replaceCandidates(c); this.flush(); }
-  async saveRejected(r: Rejected[], id: string) { await super.saveRejected(r, id); this.flush(); }
-  async setLayerEdit(u: string, i: string | null) { await super.setLayerEdit(u, i); this.flush(); }
+  private static load(path: string): State | undefined {
+    const dir = join(dirname(path), 'state.d');
+    if (existsSync(join(dir, 'meta.json'))) {
+      const meta = readJson<Pick<State, 'runs' | 'candidates' | 'layerEdit'>>(join(dir, 'meta.json'), { runs: [], candidates: [], layerEdit: {} });
+      const promoted: State['promoted'] = {};
+      const pdir = join(dir, 'promoted');
+      if (existsSync(pdir)) for (const f of readdirSync(pdir)) if (f.endsWith('.json')) promoted[decodeURIComponent(f.slice(0, -5))] = readJson<BaseRecord[]>(join(pdir, f), []);
+      return { ...meta, promoted, changes: readJson(join(dir, 'changes.json'), []), rejected: readJson(join(dir, 'rejected.json'), []), history: readJson(join(dir, 'history.json'), []) };
+    }
+    return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as State) : undefined;
+  }
+  private flushMeta() { mkdirSync(this.dir, { recursive: true }); writeFileSync(join(this.dir, 'meta.json'), JSON.stringify({ runs: this.state.runs, candidates: this.state.candidates, layerEdit: this.state.layerEdit })); }
+  private flushLayer(key: string) { writeJsonArray(join(this.dir, 'promoted', `${encodeURIComponent(key)}.json`), this.state.promoted[key] ?? []); }
+  private flushAll() {
+    this.flushMeta();
+    for (const k of Object.keys(this.state.promoted)) this.flushLayer(k);
+    writeJsonArray(join(this.dir, 'changes.json'), this.state.changes); writeJsonArray(join(this.dir, 'rejected.json'), this.state.rejected); writeJsonArray(join(this.dir, 'history.json'), this.state.history);
+  }
+  async promoteLayer(source: string, layer: string, e: EntityType, records: BaseRecord[], runId: string) {
+    const h = this.state.history.length; await super.promoteLayer(source, layer, e, records, runId);
+    this.flushLayer(`${source}|${layer}`); if (this.state.history.length !== h) writeJsonArray(join(this.dir, 'history.json'), this.state.history);
+  }
+  async saveRun(r: SyncRun) { await super.saveRun(r); this.flushMeta(); }
+  async saveChanges(c: ChangeEvent[]) { await super.saveChanges(c); writeJsonArray(join(this.dir, 'changes.json'), this.state.changes); }
+  async replaceCandidates(c: Candidate[]) { await super.replaceCandidates(c); this.flushMeta(); }
+  async saveRejected(r: Rejected[], id: string) { await super.saveRejected(r, id); writeJsonArray(join(this.dir, 'rejected.json'), this.state.rejected); }
+  async setLayerEdit(u: string, i: string | null) { await super.setLayerEdit(u, i); this.flushMeta(); }
 }

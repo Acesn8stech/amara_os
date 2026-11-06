@@ -10,7 +10,10 @@ import { decodePacked, decodeFile, decodeZoned } from '../fixedwidth.ts';
 import { dateField, normalizeStatus } from '../normalize.ts';
 import { BLM_SERVICE, pullUL, pullBLM, pullGLO, decodeRRC, UL_LAYERS } from '../connectors.ts';
 import { runSource } from '../runner.ts';
-import { MemoryStore } from '../store.ts';
+import { FileStore, MemoryStore } from '../store.ts';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { answer, parseIntent } from '../voice.ts';
 import { buildDigest } from '../digest.ts';
 import { api8, combineRRC, parseZipMemberDate, pullPdq } from '../pdq.ts';
@@ -306,8 +309,9 @@ test('PDQ: reads by column name, joins lease->API->our wells, windows by month, 
   const o = { wantedApi8: new Set(['47536324']), cutoffYm: '202501', now: NOW, sourceUrl: 'https://rrc/pdq', sourceUpdatedAt: null };
   const r = await pullPdq({ wellCompletion: wc, leaseCycle: lc }, o);
   const recs = r.layers[0].records as BaseRecord[];
-  assert.equal(recs.length, 2, 'old month and unrelated lease excluded');
-  assert.deepEqual(recs.map((x) => [x.well_or_lease_id, x.month, x.oil_bbl]), [['47536324', '2026-06-01', 150], ['47536324', '2026-07-01', 0]]);
+  assert.equal(recs.length, 1, 'old month, unrelated lease and the all-zero month are not stored');
+  assert.deepEqual(recs.map((x) => [x.well_or_lease_id, x.month, x.oil_bbl, x.api8_list]), [['O:08:012345', '2026-06-01', 150, ['47536324']]]);
+  assert.match(r.notes.join(), /1 zero\/blank rows/);
   assert.equal(recs[0].gas_mcf, null, 'blank volume stays NULL, not 0');
   await assert.rejects(pullPdq({ wellCompletion: ['OIL_GAS_CODE}LEASE_NO', 'O}1'], leaseCycle: lc }, o), /missing required columns/);
   const well = { entity_type: 'well', source_name: 'UL', source_url: 'u', source_layer: 'WellSHL', source_record_id: 'W', source_updated_at: null, retrieved_at: NOW, raw: {},
@@ -329,4 +333,19 @@ test('PDQ: export date is read from the zip listing (macOS and Linux formats)', 
   assert.equal(parseZipMemberDate('12915190541  10-26-2026 16:19   OG_LEASE_CYCLE_DATA_TABLE.dsv\n', 'OG_LEASE_CYCLE_DATA_TABLE.dsv'), '2026-10-26T16:19:00.000Z');
   assert.equal(parseZipMemberDate('12915190541  2026-10-26 16:19   OG_LEASE_CYCLE_DATA_TABLE.dsv\n', 'OG_LEASE_CYCLE_DATA_TABLE.dsv'), '2026-10-26T16:19:00.000Z');
   assert.equal(parseZipMemberDate('1  10-26-2026 16:19   OTHER.dsv\n', 'OG_LEASE_CYCLE_DATA_TABLE.dsv'), null);
+});
+
+test('FileStore: shards state per layer, round-trips, and migrates a legacy state.json', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'oa-'));
+  const legacy = join(dir, 'state.json');
+  writeFileSync(legacy, JSON.stringify({ promoted: { 'UL|OG_Lease': [lease('A')] }, history: [], rejected: [], runs: [], changes: [], candidates: [], layerEdit: { u: 'x' } }));
+  const a = new FileStore(legacy);
+  assert.equal((await a.getPromoted('UL', 'OG_Lease')).length, 1);
+  assert.equal(existsSync(legacy), false, 'legacy file renamed'); assert.equal(existsSync(`${legacy}.migrated`), true);
+  await a.promoteLayer('UL', 'WellSHL', 'well', [lease('B'), lease('C')], 'r');
+  await a.saveRun({ run_id: 'r', source: 'UL', started_at: NOW, finished_at: NOW, status: 'OK', records_in: 3, records_valid: 3, records_rejected: 0, source_updated_at: null, error_log: null, constitution_version: CONSTITUTION_VERSION, source_state: 'OK', notes: [] });
+  const b = new FileStore(legacy); // reload purely from shards
+  assert.equal((await b.getPromoted('UL', 'WellSHL')).length, 2); assert.equal((await b.getPromoted('UL', 'OG_Lease')).length, 1);
+  assert.equal((await b.getRuns()).length, 1); assert.equal(await b.getLayerEdit('u'), 'x');
+  assert.ok(readFileSync(join(dir, 'state.d', 'meta.json'), 'utf8').length < 5000, 'meta stays small');
 });

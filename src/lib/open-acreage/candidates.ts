@@ -45,8 +45,13 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
   const permitCut = addMonths(today, cfg.permitMonths); const prodCut = addMonths(today, cfg.productionMonths).slice(0, 7) + '-01';
   const stale = staleSources(inp.runs, cfg, nowIso);
 
-  const producingIds = new Set(inp.production.filter((p) => p.month && p.month >= prodCut && ((p.oil_bbl ?? 0) > 0 || (p.gas_mcf ?? 0) > 0 || (Number(p.cond_bbl) || 0) > 0 || (Number(p.csgd_mcf) || 0) > 0)).map((p) => p.well_or_lease_id));
-  const wellProducing = (w: WellRecord) => { const a = api8(w.api_no); return (a !== null && producingIds.has(a)) || (!!w.api_no && producingIds.has(w.api_no)) || producingIds.has(w.source_record_id); };
+  const producingIds = new Set<string>();
+  for (const p of inp.production) {
+    if (!(p.month && p.month >= prodCut && ((p.oil_bbl ?? 0) > 0 || (p.gas_mcf ?? 0) > 0 || (Number(p.cond_bbl) || 0) > 0 || (Number(p.csgd_mcf) || 0) > 0))) continue;
+    if (p.well_or_lease_id) producingIds.add(p.well_or_lease_id);
+    for (const a of (p.api8_list as string[] | undefined) ?? []) producingIds.add(a);
+  }
+  const wellProducing = (w: WellRecord) => { const a = api8(w.api_no); return (a !== null && producingIds.has(a)) || (!!w.api_no && producingIds.has(w.api_no)) || (!!w.source_record_id && producingIds.has(w.source_record_id)); };
   const out: Candidate[] = [];
 
   for (const sec of inp.sections) {

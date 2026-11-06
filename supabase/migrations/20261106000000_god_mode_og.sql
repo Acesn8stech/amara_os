@@ -110,7 +110,7 @@ create table god_mode_og.production_monthly (
   sync_run_id uuid references god_mode_og.sync_run(id), raw jsonb not null,
   geom geometry(Point, 4326),
   well_or_lease_id text, month date, oil_bbl numeric, gas_mcf numeric,
-  cond_bbl numeric, csgd_mcf numeric, lease_key text,
+  cond_bbl numeric, csgd_mcf numeric, lease_key text, api8_list text[],
   unique (source_name, source_record_id)
 );
 
