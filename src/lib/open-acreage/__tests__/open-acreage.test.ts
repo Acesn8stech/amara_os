@@ -11,6 +11,7 @@ import { BLM_SERVICE, pullUL, pullBLM, pullGLO, decodeRRC, UL_LAYERS } from '../
 import { runSource } from '../runner.ts';
 import { MemoryStore } from '../store.ts';
 import { answer, parseIntent } from '../voice.ts';
+import { buildDigest } from '../digest.ts';
 import type { BaseRecord, Geometry, LeaseRecord, Section, SyncRun } from '../types.ts';
 
 const NOW = '2026-11-06T12:00:00.000Z';
@@ -248,4 +249,19 @@ test('BLM Case_Disp: pulls all disposition layers, filters on GEO_STATE (not ADM
   assert.deepEqual([a.status_normalized, c.status_normalized], ['ACTIVE', 'INACTIVE']);
   assert.deepEqual([a.lease_no, a.state, a.acres, a.effective_date, a.expiration_date, a.county, a.lessee], ['NMNM   075445', 'TX', 640, '1995-11-02', '2030-03-17', null, null]);
   assert.deepEqual([a.source_record_id, c.source_record_id], ['0:5', '3:5']);
+});
+
+test('first load of a layer emits no change events; later changes do; digest uses latest run per source', async () => {
+  const store = new MemoryStore();
+  const pull = (status: LeaseRecord['status_normalized']) => async () => ({ source: 'UL' as const, state: 'OK' as const, notes: [],
+    layers: [{ layer: 'OG_Lease', url: 'u', entity_type: 'lease' as const, skipped_unchanged: false, source_updated_at: null, records: [lease('A', { status_normalized: status })], unmapped: [], fields_discovered: [] }] });
+  const failed = async () => { throw new Error('boom'); };
+  await runSource('UL', failed, store, cfg(), NOW);
+  await runSource('UL', pull('ACTIVE'), store, cfg(), NOW);
+  assert.equal((await store.getChanges()).length, 0, 'baseline load must not emit NEW events');
+  await runSource('UL', pull('EXPIRED'), store, cfg(), new Date().toISOString());
+  const ch = await store.getChanges();
+  assert.deepEqual(ch.map((c) => c.change_type), ['STATUS_CHANGE']);
+  const digest = await buildDigest(store, cfg(), new Date().toISOString());
+  assert.match(digest, /newly expired\/inactive \(24h\): 1/); assert.match(digest, /latest run\): none/);
 });

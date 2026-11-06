@@ -30,7 +30,9 @@ export async function runSource(source: 'UL' | 'BLM' | 'GLO' | 'RRC', pull: () =
       if (gate.halted) { bad++; errors.push(`${L.layer}: ${gate.haltReason}`); continue; }
       run.records_valid += gate.valid.length;
       await store.promoteLayer(source, L.layer, L.entity_type, gate.valid, run.run_id);
-      await store.saveChanges(diffRecords(prior, gate.valid, run.run_id, now));
+      // First load of a layer is a baseline, not 100k "NEW" events.
+      if (prior.length) await store.saveChanges(diffRecords(prior, gate.valid, run.run_id, now));
+      else run.notes.push(`${L.layer}: baseline load of ${gate.valid.length} records — no change events emitted`);
       await store.setLayerEdit(L.url, L.source_updated_at);
       run.source_updated_at = L.source_updated_at ?? run.source_updated_at;
       if (L.unmapped.length) run.notes.push(`${L.layer}: UNMAPPED canonical fields (stored NULL): ${L.unmapped.join(', ')}`);
