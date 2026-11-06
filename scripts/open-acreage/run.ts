@@ -5,7 +5,7 @@ import { readFileSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig } from '../../src/lib/open-acreage/config.ts';
 import { CONSTITUTION_VERSION } from '../../src/lib/open-acreage/constitution.ts';
-import { BLM_SERVICE, UL_LAYERS, decodeRRC, pullBLM, pullGLO, pullUL, type ConnectorContext, type RrcFile } from '../../src/lib/open-acreage/connectors.ts';
+import { BLM_SERVICE, UL_LAYERS, decodeRRC, RRC_PAGE, pullBLM, pullGLO, pullUL, type ConnectorContext, type RrcFile } from '../../src/lib/open-acreage/connectors.ts';
 import { rebuildCandidates, runSource } from '../../src/lib/open-acreage/runner.ts';
 import { FileStore, type Store } from '../../src/lib/open-acreage/store.ts';
 import { storeFromEnv } from '../../src/lib/open-acreage/supabase-store.ts';
@@ -46,6 +46,19 @@ async function main() {
       console.log(JSON.stringify(await runSource('RRC', async () => files.length ? decodeRRC(files, { now }) : { source: 'RRC', state: 'NOT FOUND', layers: [], notes: ['no RRC files staged (OA_RRC_DIR empty) — download step not run / links unconfirmed'] }, store, cfg, now), null, 1));
     }
     // diff_engine runs inside runSource (after each promote); listed as a job for the scheduler's dependency graph.
+    else if (j === 'rrc_links') {
+      // Read-only: fetches the RRC data-sets page and prints links (+text) relevant to permits, production, wells and layouts.
+      const res = await fetch(RRC_PAGE);
+      console.log(`HTTP ${res.status} ${res.url}`);
+      const html = await res.text();
+      const seen = new Set<string>();
+      for (const m of html.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+        const text = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); const href = new URL(m[1], res.url).toString();
+        if (!/permit|production|wellbore|well|digital map|ebcdic|manual|layout|dictionary|record|ascii|pdq|\.(zip|txt|pdf|dat|csv|ebc)\b/i.test(`${text} ${href}`) || seen.has(href)) continue;
+        seen.add(href); console.log(`${text || '(no text)'} -> ${href}`);
+      }
+      console.log(`${seen.size} links`);
+    }
     else if (j === 'services') {
       // Read-only: lists folders/services at a path on gis.blm.gov (default: the services root) to find the real lease service.
       const path = (posArgs[0] ?? 'nlsdb/rest/services').replace(/^\/+|\/+$/g, '');
