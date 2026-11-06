@@ -312,6 +312,7 @@ test('PDQ: reads by column name, joins lease->API->our wells, windows by month, 
   assert.equal(recs.length, 1, 'old month, unrelated lease and the all-zero month are not stored');
   assert.deepEqual(recs.map((x) => [x.well_or_lease_id, x.month, x.oil_bbl, x.api8_list]), [['O:08:012345', '2026-06-01', 150, ['47536324']]]);
   assert.match(r.notes.join(), /1 zero\/blank rows/);
+  assert.match(r.notes.join(), /1 RRC leases link to 1 of 1 wanted wells \(0 wanted wells have no RRC lease link\)/);
   assert.equal(recs[0].gas_mcf, null, 'blank volume stays NULL, not 0');
   await assert.rejects(pullPdq({ wellCompletion: ['OIL_GAS_CODE}LEASE_NO', 'O}1'], leaseCycle: lc }, o), /missing required columns/);
   const well = { entity_type: 'well', source_name: 'UL', source_url: 'u', source_layer: 'WellSHL', source_record_id: 'W', source_updated_at: null, retrieved_at: NOW, raw: {},

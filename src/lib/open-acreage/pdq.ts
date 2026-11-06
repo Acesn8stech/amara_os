@@ -114,7 +114,8 @@ export async function pdqProduction(lines: Lines, leaseApis: Map<string, string[
 export async function pullPdq(src: { wellCompletion: Lines; leaseCycle: Lines }, o: PdqOpts): Promise<ConnectorResult> {
   const notes: string[] = [];
   const map = await pdqLeaseApiMap(src.wellCompletion, o.wantedApi8);
-  notes.push(`PDQ: ${map.size} RRC leases link to ${o.wantedApi8.size} wanted wells`);
+  const linked = new Set<string>(); for (const apis of map.values()) for (const a of apis) linked.add(a);
+  notes.push(`PDQ: ${map.size} RRC leases link to ${linked.size} of ${o.wantedApi8.size} wanted wells (${o.wantedApi8.size - linked.size} wanted wells have no RRC lease link)`);
   const { records, scanned, skippedZero } = await pdqProduction(src.leaseCycle, map, o);
   notes.push(`PDQ: scanned ${scanned} lease-month rows; kept ${records.length} lease-months with production > 0 (months >= ${o.cutoffYm}); ${skippedZero} zero/blank rows for linked leases not stored`);
   const layer: LayerPull = { layer: 'production', url: o.sourceUrl, entity_type: 'production_monthly', skipped_unchanged: false, source_updated_at: o.sourceUpdatedAt, records, unmapped: [], fields_discovered: CYCLE_COLS };
