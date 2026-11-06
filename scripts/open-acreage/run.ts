@@ -10,7 +10,7 @@ import { rebuildCandidates, runSource } from '../../src/lib/open-acreage/runner.
 import { FileStore, type Store } from '../../src/lib/open-acreage/store.ts';
 import { storeFromEnv } from '../../src/lib/open-acreage/supabase-store.ts';
 import { fetchDistinct, fetchLayerInfo } from '../../src/lib/open-acreage/arcgis.ts';
-import { PDQ_LEASE_CYCLE, PDQ_WELL_COMPLETION, api8, combineRRC, pullPdq, unzipLines, zipMemberDate } from '../../src/lib/open-acreage/pdq.ts';
+import { PDQ_LEASE_CYCLE, PDQ_WELL_COMPLETION, api8, combineRRC, pdqLeaseApiMap, pullPdq, unzipLines, zipMemberDate } from '../../src/lib/open-acreage/pdq.ts';
 import { buildDigest, pushSlack } from '../../src/lib/open-acreage/digest.ts';
 
 const [job = 'all', ...flags] = process.argv.slice(2);
@@ -62,6 +62,18 @@ async function main() {
       }, store, cfg, now), null, 1));
     }
     // diff_engine runs inside runSource (after each promote); listed as a job for the scheduler's dependency graph.
+    else if (j === 'rrc_link_report') {
+      // Read-only: which UL wells have no RRC lease link in OG_WELL_COMPLETION, broken down so we can see what they are.
+      const zip = join(process.env.OA_RRC_DIR ?? '', 'PDQ_DSV.zip'); if (!existsSync(zip)) { console.error('OA_RRC_DIR/PDQ_DSV.zip not found'); process.exitCode = 2; continue; }
+      const wells = await store.getAll('well'); const wanted = new Set<string>(); for (const w of wells) { const a = api8(w.api_no); if (a) wanted.add(a); }
+      const linked = new Set<string>(); for (const apis of (await pdqLeaseApiMap(unzipLines(zip, PDQ_WELL_COMPLETION), wanted)).values()) for (const a of apis) linked.add(a);
+      const tally = (f: (w: (typeof wells)[number]) => string) => { const c: Record<string, [number, number]> = {}; for (const w of wells) { const a = api8(w.api_no); if (!a) continue; const k = f(w); c[k] ??= [0, 0]; c[k][linked.has(a) ? 0 : 1]++; } return Object.fromEntries(Object.entries(c).sort((x, y) => y[1][1] - x[1][1]).slice(0, 15).map(([k, v]) => [k, `linked ${v[0]} / unlinked ${v[1]}`])); };
+      console.log(`wells with a usable API: ${[...wanted].length} distinct; linked ${linked.size}; unlinked ${wanted.size - linked.size}`);
+      console.log('by source layer:', tally((w) => w.source_layer)); console.log('by status:', tally((w) => String(w.status ?? 'NULL')));
+      console.log('by completion year:', tally((w) => String(w.completion_date ?? 'NULL').slice(0, 4)));
+      console.log('by spud year:', tally((w) => String(w.spud_date ?? 'NULL').slice(0, 4)));
+      console.log('by operator:', tally((w) => String(w.operator ?? 'NULL')));
+    }
     else if (j === 'rrc_links') {
       // Read-only: fetches the RRC data-sets page and prints links (+text) relevant to permits, production, wells and layouts.
       const res = await fetch(RRC_PAGE);
