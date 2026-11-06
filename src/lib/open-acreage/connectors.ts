@@ -44,21 +44,21 @@ export const UL_LAYERS: Array<{ layer: string; path: string; entity: EntityType 
 // whatever does not match stays NULL and is reported in `unmapped` — never guessed.
 const A = {
   id: ['LEASE_ID', 'LEASE_NO', 'LEASENUMBER', 'LEASE_NUMBER', 'API', 'API_NO', 'PARCEL_ID', 'SECTION_ID', 'GlobalID', 'GLOBALID'],
-  leaseNo: ['LEASE_NO', 'LEASE_NUMBER', 'LEASENUMBER', 'LEASE_ID', 'LEASE', 'CASE_SERIAL_NUMBER', 'CSE_NR', 'LEASE_NUM'],
-  lessee: ['LESSEE', 'LESSEE_NAME', 'OPERATOR', 'CUSTOMER_NAME', 'CUST_NAME'],
-  status: ['STATUS', 'LEASE_STATUS', 'LSE_STATUS', 'CSE_DISP', 'CASE_DISPOSITION', 'DISPOSITION', 'WELL_STATUS'],
-  eff: ['EFFECTIVE_DATE', 'EFF_DATE', 'LEASE_DATE', 'LEASE_EFF_DATE', 'CSE_EFF_DATE', 'EFFECTIVE_DT', 'START_DATE'],
+  leaseNo: ['LEASE_NO', 'LEASE_NUMBER', 'LEASENUMBER', 'LEASE_ID', 'LEASE', 'CASE_SERIAL_NUMBER', 'CSE_NR', 'LEASE_NUM', 'UTLeaseNbr'],
+  lessee: ['LESSEE', 'LESSEE_NAME', 'OPERATOR', 'CUSTOMER_NAME', 'CUST_NAME', 'MapLesseeName', 'OriginalLessee', 'CurrentOwner'],
+  status: ['STATUS', 'LEASE_STATUS', 'LSE_STATUS', 'CSE_DISP', 'CASE_DISPOSITION', 'DISPOSITION', 'WELL_STATUS', 'LeaseStatus', 'WellboreStatusCode', 'ZoneStatus'],
+  eff: ['EFFECTIVE_DATE', 'EFF_DATE', 'LEASE_DATE', 'LEASE_EFF_DATE', 'CSE_EFF_DATE', 'EFFECTIVE_DT', 'START_DATE', 'DateBeginning'],
   exp: ['EXPIRATION_DATE', 'EXP_DATE', 'EXPIRY_DATE', 'LEASE_EXP_DATE', 'CSE_EXP_DATE', 'PRIMARY_TERM_END', 'EXPIRES'],
-  acres: ['ACRES', 'ACREAGE', 'GIS_ACRES', 'LEASE_ACRES', 'CSE_ACRES', 'TOTAL_ACRES'],
+  acres: ['ACRES', 'ACREAGE', 'GIS_ACRES', 'LEASE_ACRES', 'CSE_ACRES', 'TOTAL_ACRES', 'MineralAcres', 'CalcAcres'],
   county: ['COUNTY', 'COUNTY_NAME', 'CNTY', 'CNTY_NAME'],
   state: ['STATE', 'STATE_ABBR', 'ST', 'ADMIN_ST', 'ADM_ST', 'STATE_CODE', 'STATE_NAME'],
   api: ['API', 'API_NO', 'API_NUMBER', 'API14', 'API10'],
-  operator: ['OPERATOR', 'OPERATOR_NAME', 'OPER_NAME'],
-  spud: ['SPUD_DATE', 'SPUD'],
-  completion: ['COMPLETION_DATE', 'COMP_DATE'],
+  operator: ['OPERATOR', 'OPERATOR_NAME', 'OPER_NAME', 'CompanyName'],
+  spud: ['SPUD_DATE', 'SPUD', 'SpudDate'],
+  completion: ['COMPLETION_DATE', 'COMP_DATE', 'CompletionDate'],
   plug: ['PLUG_DATE', 'PLUGGED_DATE'],
   leaseName: ['LEASE_NAME', 'LEASE'],
-  field: ['FIELD', 'FIELD_NAME'],
+  field: ['FIELD', 'FIELD_NAME', 'FieldName'],
   label: ['SECTION', 'SECTION_NAME', 'LABEL', 'BLOCK_SECTION', 'NAME'],
 };
 
@@ -82,14 +82,20 @@ function mapFeature(entity: EntityType, source: 'UL' | 'BLM', lessor: LeaseRecor
         status_raw, status_normalized: normalizeStatus(status_raw), effective_date: dateField(p, A.eff),
         expiration_date: dateField(p, A.exp), acres: num(p, A.acres), county: str(p, A.county), state: str(p, A.state) } as LeaseRecord;
     }
-    case 'well':
+    case 'well': {
+      const lat = num(p, ['Latitude']); const lon = num(p, ['Longitude']);
+      if (!base.geom && lat !== null && lon !== null) base.geom = { type: 'Point', coordinates: [lon, lat] }; // source-stated coordinates, not inferred
       return { ...base, entity_type: 'well', api_no: str(p, A.api), operator: str(p, A.operator), status: str(p, A.status),
         spud_date: dateField(p, A.spud), completion_date: dateField(p, A.completion), plug_date: dateField(p, A.plug),
         lease_name: str(p, A.leaseName), field: str(p, A.field), county: str(p, A.county), state: str(p, A.state) };
+    }
     case 'available_parcel':
       return { ...base, entity_type: 'available_parcel', county: str(p, A.county), state: str(p, A.state), acres: num(p, A.acres) };
-    default:
-      return { ...base, entity_type: 'section_grid', county: str(p, A.county), state: str(p, A.state), label: str(p, A.label) };
+    default: {
+      const blk = str(p, ['blocknum']); const sec = str(p, ['sectionnum']);
+      const label = blk && sec ? `Block ${blk} Section ${sec}` : str(p, A.label);
+      return { ...base, entity_type: 'section_grid', county: str(p, A.county), state: str(p, A.state), label };
+    }
   }
 }
 
@@ -97,7 +103,7 @@ const CANON: Record<string, Array<[string, string[]]>> = {
   lease: [['lease_no', A.leaseNo], ['lessee', A.lessee], ['status', A.status], ['effective_date', A.eff], ['expiration_date', A.exp], ['acres', A.acres], ['county', A.county]],
   well: [['api_no', A.api], ['operator', A.operator], ['status', A.status], ['county', A.county]],
   available_parcel: [['county', A.county], ['acres', A.acres]],
-  section_grid: [['county', A.county], ['label', A.label]],
+  section_grid: [['county', A.county], ['label', [...A.label, 'sectionnum']]],
 };
 
 function unmappedFor(entity: EntityType, info: LayerInfo): string[] {

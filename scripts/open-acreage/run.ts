@@ -9,10 +9,11 @@ import { BLM_SERVICE, UL_LAYERS, decodeRRC, pullBLM, pullGLO, pullUL, type Conne
 import { rebuildCandidates, runSource } from '../../src/lib/open-acreage/runner.ts';
 import { FileStore, type Store } from '../../src/lib/open-acreage/store.ts';
 import { storeFromEnv } from '../../src/lib/open-acreage/supabase-store.ts';
-import { fetchLayerInfo } from '../../src/lib/open-acreage/arcgis.ts';
+import { fetchDistinct, fetchLayerInfo } from '../../src/lib/open-acreage/arcgis.ts';
 import { buildDigest, pushSlack } from '../../src/lib/open-acreage/digest.ts';
 
 const [job = 'all', ...flags] = process.argv.slice(2);
+const posArgs = flags.filter((f) => !f.startsWith('--'));
 const dry = flags.includes('--dry-run');
 const cfg = loadConfig();
 const now = new Date().toISOString();
@@ -20,7 +21,7 @@ const store: Store = storeFromEnv() ?? new FileStore(process.env.OA_STATE_FILE ?
 
 async function ctx(urls: string[], source: 'UL' | 'BLM'): Promise<ConnectorContext> {
   const priorEdit: Record<string, string | null> = {};
-  for (const u of urls) priorEdit[u] = await store.getLayerEdit(u);
+  for (const u of urls) priorEdit[u] = flags.includes('--force') ? null : await store.getLayerEdit(u); // --force: ignore lastEditDate, re-pull
   const c = cfg.sources[source];
   return { fetch: globalThis.fetch, timeoutMs: c.timeoutMs, retries: c.retries, now, priorEdit };
 }
@@ -45,6 +46,13 @@ async function main() {
       console.log(JSON.stringify(await runSource('RRC', async () => files.length ? decodeRRC(files, { now }) : { source: 'RRC', state: 'NOT FOUND', layers: [], notes: ['no RRC files staged (OA_RRC_DIR empty) — download step not run / links unconfirmed'] }, store, cfg, now), null, 1));
     }
     // diff_engine runs inside runSource (after each promote); listed as a job for the scheduler's dependency graph.
+    else if (j === 'values') {
+      // Read-only: oa values <UL layer name> <field> — distinct values, to build status vocab from facts.
+      const [layerName, field] = posArgs; const L = UL_LAYERS.find((x) => x.layer === layerName);
+      if (!L || !field) { console.error('usage: npm run oa -- values <OG_Lease|WellSHL|Wellbore|AvailableParcels|UL_Section> <field>'); process.exitCode = 2; continue; }
+      const info = await fetchLayerInfo(L.path, await ctx([], 'UL'));
+      console.log((await fetchDistinct(info, field, await ctx([], 'UL'))).sort().join('\n'));
+    }
     else if (j === 'discover') {
       // Read-only: prints each UL layer's real field names/types + one sample row so aliases can be set from facts.
       const c = await ctx([], 'UL');

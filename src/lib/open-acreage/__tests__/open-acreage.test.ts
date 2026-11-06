@@ -48,6 +48,26 @@ test('Celilo: connector maps missing fields to NULL, reports them as unmapped, e
   assert.ok(r.layers[0].unmapped.includes('expiration_date'));
 });
 
+test('UL real field names map (lease, well, section); no expiration field stays NULL; Non-Producing is not ACTIVE', async () => {
+  const mk = (fields: string[], props: Record<string, unknown>) => (async (u: string) => new Response(JSON.stringify(u.includes('?f=json')
+    ? { maxRecordCount: 5, fields: [{ name: 'OBJECTID', type: 'esriFieldTypeOID' }, ...fields.map((name) => ({ name, type: 'esriFieldTypeString' }))] }
+    : { features: [{ properties: { OBJECTID: 1, ...props }, geometry: null }] }))) as unknown as typeof fetch;
+  const ctx = (f: typeof fetch) => ({ fetch: f, timeoutMs: 1000, retries: 0, now: NOW, priorEdit: {} });
+  const lp = { UTLeaseNbr: '41298', MapLesseeName: 'ACME', LeaseStatus: 'Producing', DateBeginning: 1100000000000, County: 'Andrews', MineralAcres: 640 };
+  const l = (await pullUL(ctx(mk(Object.keys(lp), lp)), ['OG_Lease'])).layers[0];
+  const rec = l.records[0] as LeaseRecord;
+  assert.deepEqual([rec.lease_no, rec.lessee, rec.status_normalized, rec.acres, rec.county], ['41298', 'ACME', 'ACTIVE', 640, 'Andrews']);
+  assert.equal(rec.effective_date, '2004-11-09'); assert.equal(rec.expiration_date, null);
+  assert.deepEqual(l.unmapped, ['expiration_date']);
+  assert.equal(normalizeStatus('Non-Producing'), 'UNKNOWN');
+  const wp = { API: '4247536324', CompanyName: 'WPX', ZoneStatus: 'ACTIVE', Latitude: 31.5, Longitude: -103.5 };
+  const w = (await pullUL(ctx(mk(Object.keys(wp), wp)), ['Wellbore'])).layers[0].records[0] as BaseRecord;
+  assert.equal(w.operator, 'WPX'); assert.deepEqual(w.geom, { type: 'Point', coordinates: [-103.5, 31.5] });
+  const sp = { blocknum: '41', sectionnum: '7', county: 'Ward' };
+  const s = (await pullUL(ctx(mk(Object.keys(sp), sp)), ['UL_Section'])).layers[0].records[0] as BaseRecord;
+  assert.equal(s.label, 'Block 41 Section 7');
+});
+
 test('record without source_url is rejected (and kept with reason)', () => {
   const bad = lease('A', { source_url: null as unknown as string });
   const g = validateBatch([bad, lease('B')], null, cfg());

@@ -58,6 +58,8 @@ export function dateField(attrs: Record<string, unknown>, aliases: string[]): st
 export function normalizeStatus(raw: string | null): StatusNormalized {
   if (!raw) return 'UNKNOWN';
   const s = raw.toLowerCase();
+  // "Non-Producing" is not stated as active or inactive by the source: do not read it as ACTIVE via the word "producing".
+  if (/non[- ]?producing|not producing/.test(s)) return 'UNKNOWN';
   if (/expired|terminated|lapsed/.test(s)) return 'EXPIRED';
   if (/inactive|cancel|relinquish|released|surrender|closed|not active/.test(s)) return 'INACTIVE';
   if (/\bactive\b|producing|held by production|\bhbp\b|in force|\bheld\b|\bleased\b/.test(s)) return 'ACTIVE';
