@@ -138,12 +138,19 @@ export async function pullUL(ctx: ConnectorContext, only?: string[]): Promise<Co
 }
 
 // ------------------------------------------------------------------ BLM
-export const BLM_SERVICE = 'https://gis.blm.gov/nlsdb/rest/services/HUB/BLM_Natl_MLRS_Oil_and_Gas_Leases/FeatureServer';
+/**
+ * The brief's URL (gis.blm.gov/nlsdb/rest/services/HUB/BLM_Natl_MLRS_Oil_and_Gas_Leases/FeatureServer) is RETIRED: BLM redirects
+ * gis.blm.gov/nlsdb/rest/* to nlsdbpubgis.blm.gov/arcgis/rest/ (root catalog), and no HUB folder exists there (verified 2026-11-06).
+ * Oil & gas lease services actually published (Fluid_Minerals folder): Oil_Gas_Leases_Case_Disp, Oil_Gas_Leases_Production_Status.
+ * Case_Disp chosen as the lease-status base — DECISION FLAGGED for Scott. Override with OA_BLM_SERVICE.
+ */
+export const BLM_SERVICE = 'https://nlsdbpubgis.blm.gov/arcgis/rest/services/Fluid_Minerals/Oil_Gas_Leases_Case_Disp/MapServer';
 
 export async function pullBLM(ctx: ConnectorContext): Promise<ConnectorResult> {
-  const notes: string[] = []; const layers: LayerPull[] = [];
+  const svcUrl = process.env.OA_BLM_SERVICE ?? BLM_SERVICE;
+  const notes: string[] = [`BLM service: ${svcUrl}`]; const layers: LayerPull[] = [];
   let svc: any;
-  try { svc = await withRetry(() => getJson(ctx.fetch, `${BLM_SERVICE}?f=json`, ctx.timeoutMs), ctx.retries, 1000, ctx.sleep); }
+  try { svc = await withRetry(() => getJson(ctx.fetch, `${svcUrl}?f=json`, ctx.timeoutMs), ctx.retries, 1000, ctx.sleep); }
   catch (e) { return { source: 'BLM', state: 'UNREACHABLE', layers, notes: [`service listing failed: ${(e as Error).message}`] }; }
 
   let all: Array<{ id: number; name: string }> = (svc.layers ?? []).map((l: any) => ({ id: l.id, name: String(l.name) }));
@@ -151,7 +158,7 @@ export async function pullBLM(ctx: ConnectorContext): Promise<ConnectorResult> {
     // Root listing had no `layers` array. Record what it did return, then try the standard /layers endpoint.
     notes.push(`BLM service root returned no layers array; keys=[${Object.keys(svc ?? {}).join(',')}]${svc?.error ? ` error=${JSON.stringify(svc.error)}` : ''}${svc?.serviceDescription ? ` desc=${String(svc.serviceDescription).slice(0, 120)}` : ''}`);
     try {
-      const j = await withRetry(() => getJson(ctx.fetch, `${BLM_SERVICE}/layers?f=json`, ctx.timeoutMs), ctx.retries, 1000, ctx.sleep);
+      const j = await withRetry(() => getJson(ctx.fetch, `${svcUrl}/layers?f=json`, ctx.timeoutMs), ctx.retries, 1000, ctx.sleep);
       all = [...(j.layers ?? []), ...(j.tables ?? [])].map((l: any) => ({ id: l.id, name: String(l.name) }));
       notes.push(`BLM /layers endpoint returned ${all.length} layer(s)`);
     } catch (e) { notes.push(`BLM /layers fallback failed: ${(e as Error).message}`); }
@@ -163,7 +170,7 @@ export async function pullBLM(ctx: ConnectorContext): Promise<ConnectorResult> {
 
   let failures = 0;
   for (const L of leaseLayers) {
-    const url = `${BLM_SERVICE}/${L.id}`;
+    const url = `${svcUrl}/${L.id}`;
     try {
       const info = await fetchLayerInfo(url, ctx);
       if (info.lastEditDate && ctx.priorEdit[url] === info.lastEditDate) {

@@ -71,6 +71,20 @@ async function main() {
       const info = await fetchLayerInfo(L.path, await ctx([], 'UL'));
       console.log((await fetchDistinct(info, field, await ctx([], 'UL'))).sort().join('\n'));
     }
+    else if (j === 'discover' && posArgs[0] === 'blm') {
+      // Read-only: BLM service layers, fields and one sample row.
+      const svc = process.env.OA_BLM_SERVICE ?? BLM_SERVICE; const c = await ctx([], 'BLM');
+      const root = await (await fetch(`${svc}?f=json`)).json() as { layers?: Array<{ id: number; name: string }>; capabilities?: string };
+      console.log(`service ${svc}\ncapabilities=${root.capabilities ?? 'n/a'} layers=${(root.layers ?? []).map((l) => `${l.id}:${l.name}`).join(', ') || 'NONE'}`);
+      for (const l of root.layers ?? []) {
+        const info = await fetchLayerInfo(`${svc}/${l.id}`, c);
+        const q = new URLSearchParams({ where: '1=1', outFields: '*', f: 'json', returnGeometry: 'false', resultRecordCount: '1' });
+        const sample = await (await fetch(`${svc}/${l.id}/query?${q}`)).json().catch(() => null) as { features?: Array<{ attributes?: unknown }> } | null;
+        console.log(`\n== layer ${l.id} ${l.name} lastEditDate=${info.lastEditDate} maxRecordCount=${info.maxRecordCount}`);
+        console.log(info.fields.map((f) => `${f.name}:${f.type.replace('esriFieldType', '')}`).join('\n'));
+        console.log('sample:', JSON.stringify(sample?.features?.[0]?.attributes ?? null));
+      }
+    }
     else if (j === 'discover') {
       // Read-only: prints each UL layer's real field names/types + one sample row so aliases can be set from facts.
       const c = await ctx([], 'UL');

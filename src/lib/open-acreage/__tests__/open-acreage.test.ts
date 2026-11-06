@@ -7,7 +7,7 @@ import { buildCandidates, assertStatus, staleSources } from '../candidates.ts';
 import { diffRecords } from '../diff.ts';
 import { decodePacked, decodeFile, decodeZoned } from '../fixedwidth.ts';
 import { dateField, normalizeStatus } from '../normalize.ts';
-import { pullUL, pullBLM, pullGLO, decodeRRC, UL_LAYERS } from '../connectors.ts';
+import { BLM_SERVICE, pullUL, pullBLM, pullGLO, decodeRRC, UL_LAYERS } from '../connectors.ts';
 import { runSource } from '../runner.ts';
 import { MemoryStore } from '../store.ts';
 import { answer, parseIntent } from '../voice.ts';
@@ -220,7 +220,7 @@ test('voice: intents parse; answers cite sources + constitution and never say "o
 test('BLM: root without layers falls back to /layers, reports keys, picks a single layer without guessing names', async () => {
   const f = (async (u: string) => {
     const j = (o: unknown) => new Response(JSON.stringify(o));
-    if (u.endsWith('/FeatureServer?f=json')) return j({ serviceDescription: 'x' });
+    if (u === `${BLM_SERVICE}?f=json`) return j({ serviceDescription: 'x' });
     if (u.includes('/layers?f=json')) return j({ layers: [{ id: 3, name: 'Federal O&G' }] });
     if (u.includes('/3?f=json')) return j({ maxRecordCount: 5, fields: [{ name: 'OBJECTID', type: 'esriFieldTypeOID' }, { name: 'ADMIN_ST', type: 'esriFieldTypeString' }] });
     if (u.includes('returnDistinctValues')) return j({ features: [{ attributes: { ADMIN_ST: 'NM' } }, { attributes: { ADMIN_ST: 'CO' } }] });

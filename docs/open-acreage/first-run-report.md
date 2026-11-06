@@ -30,3 +30,8 @@ Candidates produced: 0. Target county list is empty (Scott sets it), and every r
 ## Verification performed
 - `npm run test:open-acreage` — 16 / 16 pass (the 5 required tests plus candidate rules, gate, diff, pagination, 403 no-retry, kill switch, EBCDIC decode, voice).
 - `tsc --noEmit` and `eslint` clean on the new code. `next build` was not run.
+
+## Update 2026-11-06 — first live runs on the Mac Mini
+
+- **UL: OK.** 66,175 pulled, 66,146 valid, 29 rejected (wells without geometry, stored with reasons), `source_updated_at` 2026-11-05T05:51:05.893Z. Fields mapped from the live layer metadata; the only unmapped canonical field is `expiration_date` (UL publishes none, so UL leases never carry an expiration date and `LEASE_EXPIRING_SOON` cannot fire from UL). Lease status uses an exact table of the 8 live `LeaseStatus` values; "Non Producing", "Pending" and "Under Review" stay UNKNOWN. Well status codes (Wellbore.ZoneStatus, 31 codes) are NOT normalized: meanings unconfirmed.
+- **BLM: the brief's service URL is wrong (was marked VERIFIED).** `gis.blm.gov/nlsdb/rest/*` is retired and redirects to the root catalog of `nlsdbpubgis.blm.gov/arcgis/rest/`; there is no `HUB` folder. Published Fluid_Minerals services include `Oil_Gas_Leases_Case_Disp` and `Oil_Gas_Leases_Production_Status` (both MapServer). Connector now targets `Oil_Gas_Leases_Case_Disp` (decision for Scott); fields still UNVERIFIED until `npm run oa -- discover blm` is read.
