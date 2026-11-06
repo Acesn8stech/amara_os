@@ -25,7 +25,9 @@ export async function POST(request: NextRequest) {
     ]);
     const all = [...leases, ...sections, ...(await store.getAll('well')), ...(await store.getAll('available_parcel'))];
     const county = new Map(all.map((r) => [`${r.source_name}:${r.source_record_id}`, (r.county as string | null) ?? null]));
-    const text = answer(intent, { leases: leases as LeaseRecord[], candidates, changes, runs, countyOfEntity: (id) => county.get(id) ?? null }, loadConfig(), new Date().toISOString());
+    const sectionCounts: Record<string, number> = {};
+    for (const s of sections) { const k = String(s.county ?? '').toLowerCase().replace(/\s+county$/, '').trim(); sectionCounts[k] = (sectionCounts[k] ?? 0) + 1; }
+    const text = answer(intent, { leases: leases as LeaseRecord[], candidates, changes, runs, countyOfEntity: (id) => county.get(id) ?? null, sectionCounts }, loadConfig(), new Date().toISOString());
     return NextResponse.json({ intent, answer: text, constitution_version: CONSTITUTION_VERSION });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Voice query failed';

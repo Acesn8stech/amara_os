@@ -276,3 +276,8 @@ test('geometry: identical, contained, partially-overlapping and disjoint polygon
   assert.equal(intersects(a, sq(-103, 31)), false, 'disjoint');
   assert.equal(buildCandidates(inputs({ leases: [lease('Same', { status_normalized: 'ACTIVE', geom: sq(-104, 31) })] }), cfg(), NOW).length, 0, 'same-shape active lease excludes the section');
 });
+
+test('voice: a target county with no section data answers NOT FOUND, not zero', () => {
+  const txt = answer({ kind: 'candidate_count', county: 'Midland' }, { leases: [], candidates: [], changes: [], runs: freshRuns(), countyOfEntity: () => null, sectionCounts: { reeves: 5 } }, cfg({ targetCounties: ['Midland'] }), NOW);
+  assert.match(txt, /NOT FOUND/); assert.doesNotMatch(txt, /^0 /);
+});

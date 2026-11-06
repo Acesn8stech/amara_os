@@ -20,7 +20,9 @@ export function parseIntent(utterance: string): Intent {
   return { kind: 'unknown' };
 }
 
-export interface VoiceData { leases: LeaseRecord[]; candidates: Candidate[]; changes: ChangeEvent[]; runs: SyncRun[]; countyOfEntity: (entityId: string) => string | null }
+export interface VoiceData { leases: LeaseRecord[]; candidates: Candidate[]; changes: ChangeEvent[]; runs: SyncRun[]; countyOfEntity: (entityId: string) => string | null;
+  /** Normalized county -> number of section-grid rows. Zero means the county cannot be evaluated at all. */
+  sectionCounts?: Record<string, number> }
 
 const norm = (c: string | null | undefined) => (c ?? '').toLowerCase().replace(/\s+county$/, '').trim();
 
@@ -40,6 +42,7 @@ export function answer(intent: Intent, d: VoiceData, cfg: OpenAcreageConfig, now
   if (intent.kind === 'candidate_count') {
     const list = d.candidates.filter((x) => norm(x.county) === c);
     const n = list.filter((x) => x.status === CANDIDATE_STATUS).length; const h = list.filter((x) => x.status === 'HOLD').length;
+    if (d.sectionCounts && !(d.sectionCounts[c] > 0)) return `NOT FOUND: there is no University Lands section data for ${intent.county} County, so candidates cannot be evaluated there.${tail(['UL'])}`;
     if (!cfg.targetCounties.map(norm).includes(c)) return `${intent.county} County is not in the configured target list, so no candidates were evaluated — NOT FOUND.${tail(['UL', 'BLM', 'RRC'])}`;
     return `${n} ${CANDIDATE_STATUS.toLowerCase()} tract${n === 1 ? '' : 's'} in ${intent.county} County${h ? `, plus ${h} on HOLD` : ''}. These are not confirmed open; each needs a courthouse title check.${tail(['UL', 'BLM', 'RRC'])}`;
   }

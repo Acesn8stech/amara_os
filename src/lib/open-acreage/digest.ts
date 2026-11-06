@@ -12,7 +12,9 @@ function latestBySource(runs: SyncRun[]): SyncRun[] {
 
 export async function buildDigest(store: Store, cfg: OpenAcreageConfig, now: string): Promise<string> {
   const day = Date.parse(now) - 86_400_000;
-  const [changes, candidates, runs, leases] = await Promise.all([store.getChanges(), store.getCandidates(), store.getRuns(), store.getAll('lease')]);
+  const [changes, candidates, runs, leases, sections] = await Promise.all([store.getChanges(), store.getCandidates(), store.getRuns(), store.getAll('lease'), store.getAll('section_grid')]);
+  const normC = (x: unknown) => String(x ?? '').toLowerCase().replace(/\s+county$/, '').trim();
+  const uncovered = cfg.targetCounties.filter((t) => !sections.some((s) => normC(s.county) === normC(t)));
   const newCands = candidates.filter((c) => c.status === CANDIDATE_STATUS && Date.parse(c.created_at) >= day);
   const exp = expiringLeases(leases as LeaseRecord[], cfg, now);
   const latest = latestBySource(runs); // an old failed attempt must not outlive a later good run
@@ -28,6 +30,7 @@ export async function buildDigest(store: Store, cfg: OpenAcreageConfig, now: str
     `• Leases newly expired/inactive (24h): ${newlyExpired} (standing expired/inactive on record: ${standing}); expiring within ${cfg.expiringDays}d: ${exp.filter((e) => e.kind === 'EXPIRING_SOON').length}`,
     `• Changes detected (24h): ${recent.length} (${['NEW', 'REMOVED', 'STATUS_CHANGE', 'EXPIRATION_CHANGE', 'GEOMETRY_CHANGE'].map((t) => `${t}:${recent.filter((c) => c.change_type === t).length}`).join(' ')})`,
     `• Sources failed / not OK (latest run): ${notOk.length ? notOk.map((r) => `${r.source}=${r.status}/${r.source_state}`).join(', ') : 'none'}`,
+    ...(uncovered.length ? [`• Target counties with NO section-grid coverage (cannot be evaluated): ${uncovered.join(', ')}`] : []),
     `• Sources stale (>2x cadence): ${stale.length ? stale.join(', ') : 'none'}`,
     `Source freshness: ${latest.filter((r) => r.source_updated_at).map((r) => `${r.source} source_updated_at=${r.source_updated_at}`).join('; ') || 'UNKNOWN (no source states a last-updated time)'}`,
     `Candidates are NOT open/leasable — title check required.`,

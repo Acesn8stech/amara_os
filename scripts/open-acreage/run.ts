@@ -52,10 +52,18 @@ async function main() {
       console.log(`HTTP ${res.status} ${res.url}`);
       const html = await res.text();
       const seen = new Set<string>();
+      // Group each link under the nearest preceding section id / heading so a dataset's files and manual stay together.
+      const ids = [...html.matchAll(/\sid=["']([^"']+)["']/gi)].map((m) => ({ at: m.index ?? 0, v: m[1] }));
+      const heads = [...html.matchAll(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi)].map((m) => ({ at: m.index ?? 0, v: m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() }));
+      const before = (arr: Array<{ at: number; v: string }>, at: number) => { let v = ''; for (const x of arr) { if (x.at < at) v = x.v; else break; } return v; };
+      let lastGroup = '';
       for (const m of html.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
         const text = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); const href = new URL(m[1], res.url).toString();
         if (!/permit|production|wellbore|well|digital map|ebcdic|manual|layout|dictionary|record|ascii|pdq|\.(zip|txt|pdf|dat|csv|ebc)\b/i.test(`${text} ${href}`) || seen.has(href)) continue;
-        seen.add(href); console.log(`${text || '(no text)'} -> ${href}`);
+        seen.add(href);
+        const group = `${before(heads, m.index ?? 0) || '?'} [#${before(ids, m.index ?? 0) || '?'}]`;
+        if (group !== lastGroup) { console.log(`\n## ${group}`); lastGroup = group; }
+        console.log(`  ${text || '(no text)'} -> ${href}`);
       }
       console.log(`${seen.size} links`);
     }
@@ -111,7 +119,12 @@ async function main() {
       }
     }
     else if (j === 'diff_engine') console.log('diff_engine: executed inline by each *_sync run (change_event rows written on promote)');
-    else if (j === 'candidate_builder') { const c = await rebuildCandidates(store, cfg, now); console.log(`candidates: ${c.length} (${c.filter((x) => x.status === 'HOLD').length} HOLD)`); }
+    else if (j === 'candidate_builder') {
+      const c = await rebuildCandidates(store, cfg, now); console.log(`candidates: ${c.length} (${c.filter((x) => x.status === 'HOLD').length} HOLD)`);
+      // Coverage: a target county with no section grid cannot be evaluated at all (NOT FOUND, not "zero").
+      const secs = await store.getAll('section_grid'); const norm = (x: unknown) => String(x ?? '').toLowerCase().replace(/\s+county$/, '').trim();
+      for (const t of cfg.targetCounties) { const n = secs.filter((s) => norm(s.county) === norm(t)).length; console.log(`  ${t}: ${n} UL sections, ${c.filter((x) => norm(x.county) === norm(t)).length} candidate tracts${n === 0 ? ' — NO SECTION COVERAGE (NOT FOUND)' : ''}`); }
+    }
     else if (j === 'alert_push') { const d = await buildDigest(store, cfg, now); console.log(d); console.log(dry ? 'dry-run: not sent' : JSON.stringify(await pushSlack(d))); }
     else { console.error(`unknown job ${j}`); process.exitCode = 2; }
   }
