@@ -62,6 +62,9 @@ const A = {
   label: ['SECTION', 'SECTION_NAME', 'LABEL', 'BLOCK_SECTION', 'NAME'],
 };
 
+/** UL's WellSHL fills status with the placeholder "NA" (the only distinct value). That is not a status: store NULL; raw keeps the original. */
+function wellStatus(v: string | null): string | null { return v && v.trim().toUpperCase() !== 'NA' ? v : null; }
+
 function recordId(props: Record<string, unknown>, info: LayerInfo): string | null {
   // The service's own OID is the one identifier we know exists structurally (from layer metadata).
   if (info.objectIdField && props[info.objectIdField] !== undefined && props[info.objectIdField] !== null) return String(props[info.objectIdField]);
@@ -85,7 +88,7 @@ function mapFeature(entity: EntityType, source: 'UL' | 'BLM', lessor: LeaseRecor
     case 'well': {
       const lat = num(p, ['Latitude']); const lon = num(p, ['Longitude']);
       if (!base.geom && lat !== null && lon !== null) base.geom = { type: 'Point', coordinates: [lon, lat] }; // source-stated coordinates, not inferred
-      return { ...base, entity_type: 'well', api_no: str(p, A.api), operator: str(p, A.operator), status: str(p, A.status),
+      return { ...base, entity_type: 'well', api_no: str(p, A.api), operator: str(p, A.operator), status: wellStatus(str(p, A.status)),
         spud_date: dateField(p, A.spud), completion_date: dateField(p, A.completion), plug_date: dateField(p, A.plug),
         lease_name: str(p, A.leaseName), field: str(p, A.field), county: str(p, A.county), state: str(p, A.state) };
     }

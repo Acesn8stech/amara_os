@@ -65,6 +65,9 @@ test('UL real field names map (lease, well, section); no expiration field stays 
   for (const [k, v] of Object.entries(want)) assert.equal(normalizeStatus(k), v, k);
   const wp = { API: '4247536324', CompanyName: 'WPX', ZoneStatus: 'ACTIVE', Latitude: 31.5, Longitude: -103.5 };
   const w = (await pullUL(ctx(mk(Object.keys(wp), wp)), ['Wellbore'])).layers[0].records[0] as BaseRecord;
+  const na = { API: '1', WellboreStatusCode: 'NA' };
+  const wn = (await pullUL(ctx(mk(Object.keys(na), na)), ['WellSHL'])).layers[0].records[0] as BaseRecord;
+  assert.equal(wn.status, null); assert.equal((wn.raw as Record<string, unknown>).WellboreStatusCode, 'NA');
   assert.equal(w.operator, 'WPX'); assert.deepEqual(w.geom, { type: 'Point', coordinates: [-103.5, 31.5] });
   const sp = { blocknum: '41', sectionnum: '7', county: 'Ward' };
   const s = (await pullUL(ctx(mk(Object.keys(sp), sp)), ['UL_Section'])).layers[0].records[0] as BaseRecord;
