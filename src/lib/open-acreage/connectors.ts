@@ -137,10 +137,20 @@ export async function pullBLM(ctx: ConnectorContext): Promise<ConnectorResult> {
   try { svc = await withRetry(() => getJson(ctx.fetch, `${BLM_SERVICE}?f=json`, ctx.timeoutMs), ctx.retries, 1000, ctx.sleep); }
   catch (e) { return { source: 'BLM', state: 'UNREACHABLE', layers, notes: [`service listing failed: ${(e as Error).message}`] }; }
 
-  const all: Array<{ id: number; name: string }> = (svc.layers ?? []).map((l: any) => ({ id: l.id, name: String(l.name) }));
-  const leaseLayers = all.filter((l) => /lease/i.test(l.name));
+  let all: Array<{ id: number; name: string }> = (svc.layers ?? []).map((l: any) => ({ id: l.id, name: String(l.name) }));
+  if (!all.length) {
+    // Root listing had no `layers` array. Record what it did return, then try the standard /layers endpoint.
+    notes.push(`BLM service root returned no layers array; keys=[${Object.keys(svc ?? {}).join(',')}]${svc?.error ? ` error=${JSON.stringify(svc.error)}` : ''}${svc?.serviceDescription ? ` desc=${String(svc.serviceDescription).slice(0, 120)}` : ''}`);
+    try {
+      const j = await withRetry(() => getJson(ctx.fetch, `${BLM_SERVICE}/layers?f=json`, ctx.timeoutMs), ctx.retries, 1000, ctx.sleep);
+      all = [...(j.layers ?? []), ...(j.tables ?? [])].map((l: any) => ({ id: l.id, name: String(l.name) }));
+      notes.push(`BLM /layers endpoint returned ${all.length} layer(s)`);
+    } catch (e) { notes.push(`BLM /layers fallback failed: ${(e as Error).message}`); }
+  }
+  // A single-layer service named for oil & gas leases needs no name match; otherwise require /lease/ in the layer name.
+  const leaseLayers = all.length === 1 ? all : all.filter((l) => /lease/i.test(l.name));
   notes.push(`BLM layers discovered: ${all.map((l) => `${l.id}:${l.name}`).join(', ') || 'none'}`);
-  if (!leaseLayers.length) return { source: 'BLM', state: 'UNVERIFIED', layers, notes: [...notes, 'No layer name matched /lease/ — cannot choose a layer without guessing; Scott to pick layer id.'] };
+  if (!leaseLayers.length) return { source: 'BLM', state: 'UNVERIFIED', layers, notes: [...notes, all.length ? 'No layer name matched /lease/ — cannot choose a layer without guessing; Scott to pick layer id.' : 'Service exposes no layers — cannot pull.'] };
 
   let failures = 0;
   for (const L of leaseLayers) {
