@@ -366,3 +366,17 @@ test('candidates: a well with no RRC link holds the tract unless it is plugged; 
   assert.equal(run([w('6', '4200000004', null, 'WellSHL')]).status, 'HOLD', 'unlinked with no status at all');
   assert.equal(run([w('7', null, 'PA')]).status, 'HOLD', 'no usable API');
 });
+
+test('sections key on GlobalID when present; runs report same-id attribute changes', async () => {
+  const mk = (props: Record<string, unknown>) => (async (u: string) => new Response(JSON.stringify(u.includes('?f=json')
+    ? { maxRecordCount: 5, fields: [{ name: 'OBJECTID', type: 'esriFieldTypeOID' }, ...Object.keys(props).map((name) => ({ name, type: 'esriFieldTypeString' }))] }
+    : { features: [{ properties: { OBJECTID: 3451, ...props }, geometry: { type: 'Polygon', coordinates: [[[-104, 31], [-103.9, 31], [-103.9, 31.1], [-104, 31.1], [-104, 31]]] } }] }))) as unknown as typeof fetch;
+  const ctx = (f: typeof fetch) => ({ fetch: f, timeoutMs: 1000, retries: 0, now: NOW, priorEdit: {} });
+  const a = await pullUL(ctx(mk({ globalid: '{ABC}', blocknum: '6', sectionnum: '7', county: 'ANDREWS' })), ['UL_Section']);
+  assert.equal(a.layers[0].records[0].source_record_id, '{ABC}');
+  const store = new MemoryStore();
+  await runSource('UL', async () => a, store, cfg(), NOW);
+  const b = await pullUL(ctx(mk({ globalid: '{ABC}', blocknum: '6', sectionnum: '8', county: 'ANDREWS' })), ['UL_Section']);
+  const run = await runSource('UL', async () => b, store, cfg(), NOW);
+  assert.match(run.notes.join('\n'), /1 of 1 existing records changed attributes under the same id — MORE THAN 5%/);
+});

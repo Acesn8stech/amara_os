@@ -30,6 +30,12 @@ export async function runSource(source: 'UL' | 'BLM' | 'GLO' | 'RRC', pull: () =
       if (gate.halted) { bad++; errors.push(`${L.layer}: ${gate.haltReason}`); continue; }
       run.records_valid += gate.valid.length;
       await store.promoteLayer(source, L.layer, L.entity_type, gate.valid, run.run_id);
+      // Same id, different attributes = the source edited the record OR renumbered its ids. Surface it instead of letting it hide.
+      if (prior.length) {
+        const before = new Map(prior.map((r) => [r.source_record_id, JSON.stringify(r.raw)])); let changed = 0;
+        for (const r of gate.valid) { const b = before.get(r.source_record_id); if (b !== undefined && b !== JSON.stringify(r.raw)) changed++; }
+        if (changed) run.notes.push(`${L.layer}: ${changed} of ${prior.length} existing records changed attributes under the same id${changed / prior.length > 0.05 ? ' — MORE THAN 5%: source ids may have been renumbered' : ''}`);
+      }
       // First load of a layer is a baseline, not 100k "NEW" events.
       if (prior.length) await store.saveChanges(diffRecords(prior, gate.valid, run.run_id, now));
       else run.notes.push(`${L.layer}: baseline load of ${gate.valid.length} records — no change events emitted`);

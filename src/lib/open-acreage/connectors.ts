@@ -75,7 +75,7 @@ function mapFeature(entity: EntityType, source: 'UL' | 'BLM', lessor: LeaseRecor
   f: { properties: Record<string, unknown>; geometry: unknown }, info: LayerInfo, ctx: ConnectorContext, idPrefix = ''): BaseRecord {
   const p = f.properties;
   const base = {
-    source_name: source, source_url: info.url, source_layer: layer, source_record_id: ((id) => (id && idPrefix ? `${idPrefix}${id}` : id))(recordId(p, info)),
+    source_name: source, source_url: info.url, source_layer: layer, source_record_id: ((id) => (id && idPrefix ? `${idPrefix}${id}` : id))(entity === 'section_grid' ? (str(p, ['globalid']) ?? recordId(p, info)) : recordId(p, info)), // sections: UL's permanent GlobalID beats the renumberable OBJECTID
     source_updated_at: info.lastEditDate, retrieved_at: ctx.now, raw: p, geom: toGeometry(f.geometry),
   };
   switch (entity) {
