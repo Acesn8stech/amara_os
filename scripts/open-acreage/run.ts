@@ -9,6 +9,7 @@ import { BLM_SERVICE, UL_LAYERS, decodeRRC, pullBLM, pullGLO, pullUL, type Conne
 import { rebuildCandidates, runSource } from '../../src/lib/open-acreage/runner.ts';
 import { FileStore, type Store } from '../../src/lib/open-acreage/store.ts';
 import { storeFromEnv } from '../../src/lib/open-acreage/supabase-store.ts';
+import { fetchLayerInfo } from '../../src/lib/open-acreage/arcgis.ts';
 import { buildDigest, pushSlack } from '../../src/lib/open-acreage/digest.ts';
 
 const [job = 'all', ...flags] = process.argv.slice(2);
@@ -44,6 +45,18 @@ async function main() {
       console.log(JSON.stringify(await runSource('RRC', async () => files.length ? decodeRRC(files, { now }) : { source: 'RRC', state: 'NOT FOUND', layers: [], notes: ['no RRC files staged (OA_RRC_DIR empty) — download step not run / links unconfirmed'] }, store, cfg, now), null, 1));
     }
     // diff_engine runs inside runSource (after each promote); listed as a job for the scheduler's dependency graph.
+    else if (j === 'discover') {
+      // Read-only: prints each UL layer's real field names/types + one sample row so aliases can be set from facts.
+      const c = await ctx([], 'UL');
+      for (const L of UL_LAYERS) {
+        const info = await fetchLayerInfo(L.path, c);
+        const q = new URLSearchParams({ where: '1=1', outFields: '*', f: 'json', returnGeometry: 'false', resultRecordCount: '1' });
+        const sample = await (await fetch(`${L.path}/query?${q}`)).json().catch(() => null);
+        console.log(`\n== ${L.layer} (${L.entity}) lastEditDate=${info.lastEditDate} maxRecordCount=${info.maxRecordCount}`);
+        console.log(info.fields.map((f) => `${f.name}:${f.type.replace('esriFieldType', '')}`).join('\n'));
+        console.log('sample:', JSON.stringify(sample?.features?.[0]?.attributes ?? null));
+      }
+    }
     else if (j === 'diff_engine') console.log('diff_engine: executed inline by each *_sync run (change_event rows written on promote)');
     else if (j === 'candidate_builder') { const c = await rebuildCandidates(store, cfg, now); console.log(`candidates: ${c.length} (${c.filter((x) => x.status === 'HOLD').length} HOLD)`); }
     else if (j === 'alert_push') { const d = await buildDigest(store, cfg, now); console.log(d); console.log(dry ? 'dry-run: not sent' : JSON.stringify(await pushSlack(d))); }

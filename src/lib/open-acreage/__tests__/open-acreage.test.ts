@@ -101,8 +101,10 @@ test('active lease, recent permit, or recent production each exclude a tract; em
   assert.equal(buildCandidates(inputs(), cfg({ targetCounties: ['Howard'] }), NOW).length, 0);
 });
 
-test('UNKNOWN-status overlapping lease does not block but is flagged; expired-recent flagged', () => {
+test('UNKNOWN-status overlapping lease forces HOLD (not a clean candidate); expired-recent flagged', () => {
   const out = buildCandidates(inputs({ leases: [lease('U'), lease('E', { status_normalized: 'EXPIRED', expiration_date: '2026-03-01' })] }), cfg(), NOW);
+  assert.equal(out[0].status, 'HOLD');
+  assert.equal(buildCandidates(inputs({ leases: [lease('E', { status_normalized: 'EXPIRED', expiration_date: '2026-03-01' })] }), cfg(), NOW)[0].status, CANDIDATE_STATUS);
   assert.ok(out[0].reason_codes.includes('LEASE_STATUS_UNKNOWN_OVERLAP')); assert.ok(out[0].reason_codes.includes('LEASE_EXPIRED_RECENT'));
   assert.ok(out[0].reason_codes.includes('GLO_NOT_CONNECTED'));
 });
