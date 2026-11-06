@@ -38,8 +38,10 @@ export function validateRecord(r: BaseRecord, cfg: Pick<OpenAcreageConfig, 'bbox
  */
 export function validateBatch(records: BaseRecord[], priorCount: number | null, cfg: OpenAcreageConfig): GateResult {
   const valid: BaseRecord[] = []; const rejected: Rejected[] = [];
+  const seen = new Set<string>();
   for (const r of records) {
     const reasons = validateRecord(r, cfg);
+    if (r.source_record_id) { if (seen.has(r.source_record_id)) reasons.push('duplicate source_record_id in batch'); else seen.add(r.source_record_id); }
     if (reasons.length) rejected.push({ entity_type: r.entity_type, record: r, reasons });
     else valid.push(r);
   }

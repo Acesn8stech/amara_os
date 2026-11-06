@@ -115,6 +115,22 @@ function unmappedFor(entity: EntityType, info: LayerInfo): string[] {
   return (CANON[entity] ?? []).filter(([, aliases]) => !pick(probe, aliases)).map(([c]) => c);
 }
 
+/**
+ * Two features can share one source id (UL_Section has duplicate GlobalIDs). Never merge or drop them silently: give every member of a
+ * duplicated id the OBJECTID suffix so the ids stay unique and stable. Returns how many records were renamed.
+ */
+export function disambiguateIds(records: BaseRecord[], oidField: string | null): number {
+  const count = new Map<string, number>();
+  for (const r of records) if (r.source_record_id) count.set(r.source_record_id, (count.get(r.source_record_id) ?? 0) + 1);
+  let n = 0;
+  records.forEach((r, i) => {
+    const id = r.source_record_id; if (!id || (count.get(id) ?? 0) < 2) return;
+    const oid = oidField ? r.raw[oidField] : undefined;
+    r.source_record_id = `${id}#${oid ?? `row${i}`}`; n++;
+  });
+  return n;
+}
+
 export async function pullUL(ctx: ConnectorContext, only?: string[]): Promise<ConnectorResult> {
   const layers: LayerPull[] = []; const notes = ['Terms of use: NOT FOUND on UL GIS page — do not redistribute data publicly.'];
   let failures = 0;
@@ -128,9 +144,11 @@ export async function pullUL(ctx: ConnectorContext, only?: string[]): Promise<Co
       }
       if (!info.lastEditDate) notes.push(`${L.layer}: service does not state editingInfo.lastEditDate — source_updated_at = NULL, full pull every run`);
       const feats = await fetchAllFeatures(info, ctx);
+      const records = feats.map((f) => mapFeature(L.entity, 'UL', 'UNIVERSITY', L.layer, f, info, ctx));
+      const renamed = disambiguateIds(records, info.objectIdField);
+      if (renamed) notes.push(`${L.layer}: ${renamed} records shared an id with another feature (duplicate source ids) — kept both, suffixed with OBJECTID`);
       layers.push({ layer: L.layer, url: L.path, entity_type: L.entity, skipped_unchanged: false, source_updated_at: info.lastEditDate,
-        records: feats.map((f) => mapFeature(L.entity, 'UL', 'UNIVERSITY', L.layer, f, info, ctx)),
-        unmapped: unmappedFor(L.entity, info), fields_discovered: info.fields.map((f) => f.name) });
+        records, unmapped: unmappedFor(L.entity, info), fields_discovered: info.fields.map((f) => f.name) });
     } catch (e) { failures++; notes.push(`${L.layer}: ${(e as Error).message}`); }
   }
   const state: SourceState = failures === 0 ? 'OK' : layers.length ? 'UNVERIFIED' : 'UNREACHABLE';

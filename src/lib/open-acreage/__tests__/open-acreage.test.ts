@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { answer, parseIntent } from '../voice.ts';
 import { buildDigest } from '../digest.ts';
+import { disambiguateIds } from '../connectors.ts';
 import { api8, combineRRC, parseZipMemberDate, pullPdq } from '../pdq.ts';
 import type { BaseRecord, Geometry, LeaseRecord, Section, SyncRun } from '../types.ts';
 
@@ -379,4 +380,20 @@ test('sections key on GlobalID when present; runs report same-id attribute chang
   const b = await pullUL(ctx(mk({ globalid: '{ABC}', blocknum: '6', sectionnum: '8', county: 'ANDREWS' })), ['UL_Section']);
   const run = await runSource('UL', async () => b, store, cfg(), NOW);
   assert.match(run.notes.join('\n'), /1 of 1 existing records changed attributes under the same id — MORE THAN 5%/);
+});
+
+test('duplicate source ids are disambiguated by OBJECTID in the connector and rejected by the gate if any remain', async () => {
+  const mk = (oid: number, id: string) => ({ ...lease(id), raw: { OBJECTID: oid } }) as LeaseRecord;
+  const recs = [mk(1, '{G}'), mk(2, '{G}'), mk(3, '{H}')];
+  assert.equal(disambiguateIds(recs, 'OBJECTID'), 2);
+  assert.deepEqual(recs.map((r) => r.source_record_id), ['{G}#1', '{G}#2', '{H}']);
+  const g = validateBatch([lease('X'), lease('X'), lease('Y')], null, cfg());
+  assert.equal(g.valid.length, 2); assert.match(g.rejected[0].reasons.join(), /duplicate source_record_id/);
+  // end to end through the UL connector: two features, one GlobalID
+  const f = (async (u: string) => new Response(JSON.stringify(u.includes('?f=json')
+    ? { maxRecordCount: 5, fields: [{ name: 'OBJECTID', type: 'esriFieldTypeOID' }, { name: 'globalid', type: 'esriFieldTypeString' }] }
+    : { features: [10, 11].map((o) => ({ properties: { OBJECTID: o, globalid: '{DUP}' }, geometry: { type: 'Polygon', coordinates: [[[-104, 31], [-103.9, 31], [-103.9, 31.1], [-104, 31]]] } })) }))) as unknown as typeof fetch;
+  const r = await pullUL({ fetch: f, timeoutMs: 1000, retries: 0, now: NOW, priorEdit: {} }, ['UL_Section']);
+  assert.deepEqual(r.layers[0].records.map((x) => x.source_record_id), ['{DUP}#10', '{DUP}#11']);
+  assert.match(r.notes.join('\n'), /2 records shared an id/);
 });
