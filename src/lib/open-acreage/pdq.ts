@@ -28,6 +28,23 @@ export async function* unzipLines(zipPath: string, member: string): AsyncGenerat
   if (code !== 0) throw new Error(`unzip ${member} failed (exit ${code}): ${err.trim().slice(0, 200)} — check the member name inside ${zipPath}`);
 }
 
+/** Export date of a zip member from `unzip -l` (macOS: MM-DD-YYYY, Linux: YYYY-MM-DD). This is the dump's real freshness, not the download time. */
+export function parseZipMemberDate(listing: string, member: string): string | null {
+  for (const line of listing.split('\n')) {
+    if (!line.trim().endsWith(member)) continue;
+    const us = /(\d{2})-(\d{2})-(\d{4})\s+(\d{2}:\d{2})/.exec(line); if (us) return `${us[3]}-${us[1]}-${us[2]}T${us[4]}:00.000Z`;
+    const iso = /(\d{4})-(\d{2})-(\d{2})\s+(\d{2}:\d{2})/.exec(line); if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}T${iso[4]}:00.000Z`;
+  }
+  return null;
+}
+
+export function zipMemberDate(zipPath: string, member: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const p = spawn('unzip', ['-l', zipPath], { stdio: ['ignore', 'pipe', 'ignore'] }); let out = '';
+    p.stdout.on('data', (d) => { out += d; }); p.on('close', () => resolve(parseZipMemberDate(out, member))); p.on('error', () => resolve(null));
+  });
+}
+
 /** Normalizes a UL/RRC API to RRC's 8 digits (3-digit county + 5-digit unique). Anything else => null (never guessed). */
 export function api8(raw: unknown): string | null {
   const d = String(raw ?? '').replace(/\D/g, '');

@@ -13,7 +13,7 @@ import { runSource } from '../runner.ts';
 import { MemoryStore } from '../store.ts';
 import { answer, parseIntent } from '../voice.ts';
 import { buildDigest } from '../digest.ts';
-import { api8, combineRRC, pullPdq } from '../pdq.ts';
+import { api8, combineRRC, parseZipMemberDate, pullPdq } from '../pdq.ts';
 import type { BaseRecord, Geometry, LeaseRecord, Section, SyncRun } from '../types.ts';
 
 const NOW = '2026-11-06T12:00:00.000Z';
@@ -323,4 +323,10 @@ test('combineRRC: permits alone or production alone is UNVERIFIED; both is OK', 
   assert.equal(combineRRC([part('permit')]).state, 'UNVERIFIED');
   assert.equal(combineRRC([part('permit'), part('production')]).state, 'OK');
   assert.equal(combineRRC([]).state, 'NOT FOUND');
+});
+
+test('PDQ: export date is read from the zip listing (macOS and Linux formats)', () => {
+  assert.equal(parseZipMemberDate('12915190541  10-26-2026 16:19   OG_LEASE_CYCLE_DATA_TABLE.dsv\n', 'OG_LEASE_CYCLE_DATA_TABLE.dsv'), '2026-10-26T16:19:00.000Z');
+  assert.equal(parseZipMemberDate('12915190541  2026-10-26 16:19   OG_LEASE_CYCLE_DATA_TABLE.dsv\n', 'OG_LEASE_CYCLE_DATA_TABLE.dsv'), '2026-10-26T16:19:00.000Z');
+  assert.equal(parseZipMemberDate('1  10-26-2026 16:19   OTHER.dsv\n', 'OG_LEASE_CYCLE_DATA_TABLE.dsv'), null);
 });

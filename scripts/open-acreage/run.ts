@@ -10,7 +10,7 @@ import { rebuildCandidates, runSource } from '../../src/lib/open-acreage/runner.
 import { FileStore, type Store } from '../../src/lib/open-acreage/store.ts';
 import { storeFromEnv } from '../../src/lib/open-acreage/supabase-store.ts';
 import { fetchDistinct, fetchLayerInfo } from '../../src/lib/open-acreage/arcgis.ts';
-import { PDQ_LEASE_CYCLE, PDQ_WELL_COMPLETION, api8, combineRRC, pullPdq, unzipLines } from '../../src/lib/open-acreage/pdq.ts';
+import { PDQ_LEASE_CYCLE, PDQ_WELL_COMPLETION, api8, combineRRC, pullPdq, unzipLines, zipMemberDate } from '../../src/lib/open-acreage/pdq.ts';
 import { buildDigest, pushSlack } from '../../src/lib/open-acreage/digest.ts';
 
 const [job = 'all', ...flags] = process.argv.slice(2);
@@ -55,7 +55,7 @@ async function main() {
           const d = new Date(now); d.setUTCMonth(d.getUTCMonth() - (cfg.productionMonths + 2));
           const cutoffYm = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
           parts.push(await pullPdq({ wellCompletion: unzipLines(zip, PDQ_WELL_COMPLETION), leaseCycle: unzipLines(zip, PDQ_LEASE_CYCLE) },
-            { wantedApi8: wanted, cutoffYm, now, sourceUrl: `${RRC_PAGE}#production-data-query-dump`, sourceUpdatedAt: statSync(zip).mtime.toISOString() }));
+            { wantedApi8: wanted, cutoffYm, now, sourceUrl: `${RRC_PAGE}#production-data-query-dump`, sourceUpdatedAt: (await zipMemberDate(zip, PDQ_LEASE_CYCLE)) ?? statSync(zip).mtime.toISOString() }));
         }
         if (!parts.length) return { source: 'RRC' as const, state: 'NOT FOUND' as const, layers: [], notes: ['no RRC files staged (OA_RRC_DIR: permit.dat and/or PDQ_DSV.zip) — download step not run'] };
         return combineRRC(parts);
