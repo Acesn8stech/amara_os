@@ -51,6 +51,20 @@ async function main() {
       const res = await fetch(RRC_PAGE);
       console.log(`HTTP ${res.status} ${res.url}`);
       const html = await res.text();
+      // Preferred output: one block per table row, with the row's visible title text, so each dataset stays with its own files/manual.
+      const rows = [...html.matchAll(/<tr[\s\S]*?<\/tr>/gi)].map((m) => m[0]);
+      let printed = 0;
+      for (const row of rows) {
+        const links = [...row.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)].map((m) => ({ text: m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(), href: new URL(m[1], res.url).toString() }))
+          .filter((l) => /mft\.rrc|\.pdf|\.zip|\.csv/i.test(l.href));
+        if (!links.length) continue;
+        const title = row.replace(/<a\s[\s\S]*?<\/a>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+        console.log(`\nROW: ${title.slice(0, 400)}`);
+        for (const l of links) console.log(`  ${l.text || '(no text)'} -> ${l.href}`);
+        printed++;
+      }
+      console.log(`\n${printed} table rows with file links${printed ? '' : ' (none: page has no <tr> rows; falling back to grouped links below)'}`);
+      if (printed) continue;
       const seen = new Set<string>();
       // Group each link under the nearest preceding section id / heading so a dataset's files and manual stay together.
       const ids = [...html.matchAll(/\sid=["']([^"']+)["']/gi)].map((m) => ({ at: m.index ?? 0, v: m[1] }));
