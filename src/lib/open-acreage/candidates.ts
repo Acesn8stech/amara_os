@@ -91,10 +91,14 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
     }
     if (inp.permits.some((p) => !p.geom && norm(p.county) === norm(sec.county))) reasons.push('PERMITS_WITHOUT_GEOMETRY');
     reasons.push('GLO_NOT_CONNECTED'); // coverage gap, informational — status unchanged
+    // A permit still pending approval inside the tract means drilling is intended: visible HOLD, not a clean candidate.
+    const pending = inp.permits.filter((p) => p.permit_status === 'PENDING' && p.geom && pointInGeometry([p.geom.coordinates[0] as number, p.geom.coordinates[1] as number], g));
+    if (pending.length) { reasons.push('PERMIT_PENDING'); pending.forEach(ref); }
     const unverifiable = inside.filter((w) => !verifiable(w));
     if (unverifiable.length) { reasons.push('WELL_NO_PRODUCTION_LINK'); unverifiable.forEach(ref); }
     let status: CandidateStatus = CANDIDATE_STATUS;
     if (unverifiable.length) { status = 'HOLD'; reasons.push('HOLD:UNVERIFIABLE_WELL'); }
+    if (pending.length) { status = 'HOLD'; reasons.push('HOLD:PERMIT_PENDING'); }
     // A lease we cannot classify may be active. Never present such a tract as a clean candidate (Celilo / UNVERIFIED over approximation).
     if (reasons.includes('LEASE_STATUS_UNKNOWN_OVERLAP')) { status = 'HOLD'; reasons.push('HOLD:UNKNOWN_LEASE_STATUS'); }
     if (stale.length) { status = 'HOLD'; reasons.push('STALE_SOURCE', ...stale.map((s) => `STALE:${s}`)); }

@@ -99,6 +99,7 @@ create table god_mode_og.permit (
   sync_run_id uuid references god_mode_og.sync_run(id), raw jsonb not null,
   geom geometry(Point, 4326),
   permit_no text, issued_date date, lease_name text, county text,
+  permit_status text, universal_doc_no text, operator_name text, operator_no text, submit_date date, county_code text, nearest_town text, district text, flags text[],
   unique (source_name, source_record_id)
 );
 create index permit_geom_gix on god_mode_og.permit using gist (geom);

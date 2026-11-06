@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { answer, parseIntent } from '../voice.ts';
 import { buildDigest } from '../digest.ts';
+import { parseRrcDsv, pickLatestPending, pullPending } from '../pending.ts';
 import { disambiguateIds } from '../connectors.ts';
 import { api8, combineRRC, parseZipMemberDate, pullPdq } from '../pdq.ts';
 import type { BaseRecord, Geometry, LeaseRecord, Section, SyncRun } from '../types.ts';
@@ -396,4 +397,36 @@ test('duplicate source ids are disambiguated by OBJECTID in the connector and re
   const r = await pullUL({ fetch: f, timeoutMs: 1000, retries: 0, now: NOW, priorEdit: {} }, ['UL_Section']);
   assert.deepEqual(r.layers[0].records.map((x) => x.source_record_id), ['{DUP}#10', '{DUP}#11']);
   assert.match(r.notes.join('\n'), /2 records shared an id/);
+});
+
+test('pending permits: wrapped header, quotes, join, decimal-only coordinates, NO_WELLBORE, UNVERIFIED county, mismatched rows reported', () => {
+  const wrapped = parseRrcDsv('UNIVERSAL_DOC_NO}CASES_EXCEP_A\nPPROVAL_CODE\n"7"}"a"\n"8"\n');
+  assert.deepEqual(wrapped.header, ['UNIVERSAL_DOC_NO', 'CASES_EXCEP_APPROVAL_CODE']);
+  assert.equal(wrapped.rows.length, 1); assert.equal(wrapped.rejects.length, 1);
+
+  const permitTxt = ['UNIVERSAL_DOC_NO}STATUS_NUMBER}OPERATOR_NAME}OPERATOR_NUMBER}DISTRICT}DEFAULT_LEASE_NAME}SUBMIT_DATE',
+    '"1001"}"1"}"ACME OIL"}"000111"}"08"}"SMITH"}"11/03/2026"', '"1002"}"1"}"BETA"}"000222"}"8A"}"JONES"}"11/04/2026"', '"1003"}"1"}"GAMMA"}"000333"}"08"}"LEE"}"11/04/2026"'].join('\n');
+  const wbTxt = ['UNIVERSAL_DOC_NO}COUNTY_CODE}NEAREST_TOWN}LAT_DEGREES}LONG_DEGREES}LATLONG_TYPE_CODE',
+    '"1001"}"003"}"ANDREWS"}"31.05"}"-103.95"}"1"', '"1002"}"227"}"SOMEWHERE"}"32.1"}"-101.2"}"2"', '"1001"}"003"}"ANDREWS"}"31.06"}"-103.96"}"1"', 'broken}line'].join('\n');
+  const r = pullPending({ permitText: permitTxt, wellboreText: wbTxt, ts: '20261105110800', permitFile: 'p.txt', wellboreFile: 'w.txt' }, NOW);
+  const recs = r.layers[0].records as BaseRecord[];
+  assert.equal(recs.length, 4, 'doc 1001 has two wellbores, 1002 one, 1003 none');
+  assert.deepEqual(recs.map((x) => x.source_record_id), ['1001:0', '1001:1', '1002:0', '1003:0']);
+  assert.deepEqual(recs[0].geom, { type: 'Point', coordinates: [-103.95, 31.05] }); assert.equal(recs[0].county, 'ANDREWS'); assert.equal(recs[0].permit_status, 'PENDING');
+  assert.equal(recs[2].geom, null, 'non-decimal coordinate type stays NULL'); assert.equal(recs[2].county, 'UNVERIFIED code 227');
+  assert.deepEqual(recs[3].flags, ['NO_WELLBORE']); assert.equal(recs[3].geom, null);
+  assert.equal(recs[0].issued_date, null); assert.equal(recs[0].submit_date, '2026-11-03');
+  assert.equal(r.state, 'UNVERIFIED', 'a mismatched row means not OK'); assert.match(r.notes.join('\n'), /1 rows had a value count different/);
+  assert.throws(() => pullPending({ permitText: permitTxt.replace('OPERATOR_NUMBER}', 'OP_NO}'), wellboreText: wbTxt, ts: '20261105110800', permitFile: 'p', wellboreFile: 'w' }, NOW), /missing required columns/);
+  assert.deepEqual(pickLatestPending(['dp_drilling_permit_pending_20261105110800.txt', 'dp_wellbore_pending_20261105110800.txt', 'dp_drilling_permit_pending_20261105170800.txt', 'dp_latlongs_pending_20261105111500.txt']),
+    { ts: '20261105110800', permitFile: 'dp_drilling_permit_pending_20261105110800.txt', wellboreFile: 'dp_wellbore_pending_20261105110800.txt' });
+});
+
+test('candidates: a pending permit inside a tract holds it (PERMIT_PENDING) but does not count as an issued permit', () => {
+  const pend = { entity_type: 'permit', source_name: 'RRC', source_url: 'u', source_layer: 'permit_pending', source_record_id: '1:0', source_updated_at: null, retrieved_at: NOW, raw: {},
+    geom: { type: 'Point', coordinates: [-103.95, 31.05] }, permit_status: 'PENDING', issued_date: null, county: 'Reeves' } as BaseRecord;
+  const c = buildCandidates(inputs({ permits: [pend] }), cfg(), NOW)[0];
+  assert.equal(c.status, 'HOLD'); assert.ok(c.reason_codes.includes('PERMIT_PENDING')); assert.ok(c.reason_codes.includes('HOLD:PERMIT_PENDING'));
+  const away = buildCandidates(inputs({ permits: [{ ...pend, geom: { type: 'Point', coordinates: [-100, 30] } } as BaseRecord] }), cfg(), NOW)[0];
+  assert.equal(away.status, CANDIDATE_STATUS);
 });
