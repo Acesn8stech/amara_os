@@ -55,8 +55,27 @@ export function dateField(attrs: Record<string, unknown>, aliases: string[]): st
  * Status comes only from what the source states. We never derive ACTIVE/EXPIRED from a date
  * (that would be inference); no status text => UNKNOWN.
  */
+/**
+ * Exact UL OG_Lease.LeaseStatus vocabulary (distinct values read live 2026-11-06). Only in-force readings map to ACTIVE
+ * (the safe direction: it can only exclude a tract, never offer one). Everything else stays UNKNOWN until Scott rules on it:
+ *   'Non Producing' — could be an in-force extension or a lapsed lease; left UNKNOWN so it surfaces as HOLD, not hidden.
+ *   'Pending', 'Under Review' — not stated as active or inactive.
+ */
+export const UL_LEASE_STATUS: Record<string, StatusNormalized> = {
+  'held by unit': 'ACTIVE',
+  'producing': 'ACTIVE',
+  'producing (pt)': 'ACTIVE',
+  'primary term non-producing': 'ACTIVE', // still inside its primary term => in force
+  'shut-in royalty': 'ACTIVE', // lease maintained by shut-in royalty payments
+  'non producing': 'UNKNOWN',
+  'pending': 'UNKNOWN',
+  'under review': 'UNKNOWN',
+};
+
 export function normalizeStatus(raw: string | null): StatusNormalized {
   if (!raw) return 'UNKNOWN';
+  const exact = UL_LEASE_STATUS[raw.trim().toLowerCase()];
+  if (exact) return exact;
   const s = raw.toLowerCase();
   // "Non-Producing" is not stated as active or inactive by the source: do not read it as ACTIVE via the word "producing".
   if (/non[- ]?producing|not producing/.test(s)) return 'UNKNOWN';

@@ -60,6 +60,9 @@ test('UL real field names map (lease, well, section); no expiration field stays 
   assert.equal(rec.effective_date, '2004-11-09'); assert.equal(rec.expiration_date, null);
   assert.deepEqual(l.unmapped, ['expiration_date']);
   assert.equal(normalizeStatus('Non-Producing'), 'UNKNOWN');
+  const want: Record<string, string> = { 'Held by Unit': 'ACTIVE', 'Non Producing': 'UNKNOWN', 'Pending': 'UNKNOWN', 'Primary Term Non-Producing': 'ACTIVE',
+    'Producing': 'ACTIVE', 'Producing (PT)': 'ACTIVE', 'Shut-In Royalty': 'ACTIVE', 'Under Review': 'UNKNOWN' };
+  for (const [k, v] of Object.entries(want)) assert.equal(normalizeStatus(k), v, k);
   const wp = { API: '4247536324', CompanyName: 'WPX', ZoneStatus: 'ACTIVE', Latitude: 31.5, Longitude: -103.5 };
   const w = (await pullUL(ctx(mk(Object.keys(wp), wp)), ['Wellbore'])).layers[0].records[0] as BaseRecord;
   assert.equal(w.operator, 'WPX'); assert.deepEqual(w.geom, { type: 'Point', coordinates: [-103.5, 31.5] });
