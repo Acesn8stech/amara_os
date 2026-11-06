@@ -1,10 +1,10 @@
 // Hermes entrypoint:  npm run oa -- <job> [--dry-run]
 // Jobs: ul_sync | blm_sync | glo_sync | rrc_sync | diff_engine | candidate_builder | alert_push | all
 // Store: Supabase when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set, else key-less local JSON (.data/open-acreage/state.json).
-import { readFileSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig } from '../../src/lib/open-acreage/config.ts';
-import { CONSTITUTION_VERSION } from '../../src/lib/open-acreage/constitution.ts';
+import { CANDIDATE_STATUS, CONSTITUTION_VERSION } from '../../src/lib/open-acreage/constitution.ts';
 import { BLM_SERVICE, UL_LAYERS, decodeRRC, RRC_PAGE, pullBLM, pullGLO, pullUL, type ConnectorContext, type ConnectorResult, type RrcFile } from '../../src/lib/open-acreage/connectors.ts';
 import { rebuildCandidates, runSource } from '../../src/lib/open-acreage/runner.ts';
 import { FileStore, type Store } from '../../src/lib/open-acreage/store.ts';
@@ -62,6 +62,15 @@ async function main() {
       }, store, cfg, now), null, 1));
     }
     // diff_engine runs inside runSource (after each promote); listed as a job for the scheduler's dependency graph.
+    else if (j === 'candidates_csv') {
+      // Read-only export of the current candidate list for review. These are leads, never "open": each needs a courthouse title check.
+      const secs = new Map((await store.getAll('section_grid')).map((s) => [`${s.source_name}:${s.source_record_id}`, s]));
+      const q = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const rows = (await store.getCandidates()).map((c) => { const s = secs.get(c.tract_id); return [c.status, c.county, s?.label ?? '', c.tract_id, c.reason_codes.join(';'), s?.source_updated_at ?? ''].map(q).join(','); });
+      const out = process.env.OA_CSV ?? '.data/open-acreage/candidates.csv';
+      writeFileSync(out, ['status,county,section,tract_id,reason_codes,source_updated_at', ...rows].join('\n') + '\n');
+      console.log(`wrote ${rows.length} rows to ${out} (constitution ${CONSTITUTION_VERSION}; ${CANDIDATE_STATUS} — not open/leasable)`);
+    }
     else if (j === 'rrc_link_report') {
       // Read-only: which UL wells have no RRC lease link in OG_WELL_COMPLETION, broken down so we can see what they are.
       const zip = join(process.env.OA_RRC_DIR ?? '', 'PDQ_DSV.zip'); if (!existsSync(zip)) { console.error('OA_RRC_DIR/PDQ_DSV.zip not found'); process.exitCode = 2; continue; }
