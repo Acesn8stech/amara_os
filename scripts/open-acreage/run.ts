@@ -46,6 +46,18 @@ async function main() {
       console.log(JSON.stringify(await runSource('RRC', async () => files.length ? decodeRRC(files, { now }) : { source: 'RRC', state: 'NOT FOUND', layers: [], notes: ['no RRC files staged (OA_RRC_DIR empty) — download step not run / links unconfirmed'] }, store, cfg, now), null, 1));
     }
     // diff_engine runs inside runSource (after each promote); listed as a job for the scheduler's dependency graph.
+    else if (j === 'services') {
+      // Read-only: lists folders/services at a path on gis.blm.gov (default: the services root) to find the real lease service.
+      const path = (posArgs[0] ?? 'nlsdb/rest/services').replace(/^\/+|\/+$/g, '');
+      const res = await fetch(`https://gis.blm.gov/${path}?f=json`);
+      const jj = await res.json().catch(() => null) as { folders?: string[]; services?: Array<{ name: string; type: string }>; error?: unknown } | null;
+      console.log(`HTTP ${res.status} gis.blm.gov/${path}`);
+      if (!jj) console.log('non-JSON response'); else {
+        if (jj.error) console.log('error:', JSON.stringify(jj.error));
+        console.log('folders:', (jj.folders ?? []).join(', ') || '(none)');
+        for (const sv of jj.services ?? []) console.log(`service: ${sv.name} [${sv.type}]`);
+      }
+    }
     else if (j === 'values') {
       // Read-only: oa values <UL layer name> <field> — distinct values, to build status vocab from facts.
       const [layerName, field] = posArgs; const L = UL_LAYERS.find((x) => x.layer === layerName);
