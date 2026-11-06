@@ -51,7 +51,7 @@ async function main() {
       const path = (posArgs[0] ?? 'nlsdb/rest/services').replace(/^\/+|\/+$/g, '');
       const res = await fetch(`https://gis.blm.gov/${path}?f=json`);
       const jj = await res.json().catch(() => null) as { folders?: string[]; services?: Array<{ name: string; type: string }>; layers?: Array<{ id: number; name: string }>; tables?: Array<{ id: number; name: string }>; capabilities?: string; maxRecordCount?: number; serviceDescription?: string; error?: unknown } | null;
-      console.log(`HTTP ${res.status} gis.blm.gov/${path}`);
+      console.log(`HTTP ${res.status} requested gis.blm.gov/${path} | final url: ${res.url} | redirected: ${res.redirected} | content-type: ${res.headers.get('content-type')}`);
       if (!jj) console.log('non-JSON response'); else {
         if (jj.error) console.log('error:', JSON.stringify(jj.error));
         console.log('folders:', (jj.folders ?? []).join(', ') || '(none)');
