@@ -50,12 +50,18 @@ async function main() {
       // Read-only: lists folders/services at a path on gis.blm.gov (default: the services root) to find the real lease service.
       const path = (posArgs[0] ?? 'nlsdb/rest/services').replace(/^\/+|\/+$/g, '');
       const res = await fetch(`https://gis.blm.gov/${path}?f=json`);
-      const jj = await res.json().catch(() => null) as { folders?: string[]; services?: Array<{ name: string; type: string }>; error?: unknown } | null;
+      const jj = await res.json().catch(() => null) as { folders?: string[]; services?: Array<{ name: string; type: string }>; layers?: Array<{ id: number; name: string }>; tables?: Array<{ id: number; name: string }>; capabilities?: string; maxRecordCount?: number; serviceDescription?: string; error?: unknown } | null;
       console.log(`HTTP ${res.status} gis.blm.gov/${path}`);
       if (!jj) console.log('non-JSON response'); else {
         if (jj.error) console.log('error:', JSON.stringify(jj.error));
         console.log('folders:', (jj.folders ?? []).join(', ') || '(none)');
         for (const sv of jj.services ?? []) console.log(`service: ${sv.name} [${sv.type}]`);
+        if (jj.layers || jj.tables) {
+          console.log(`capabilities=${jj.capabilities ?? 'n/a'} maxRecordCount=${jj.maxRecordCount ?? 'n/a'}`);
+          if (jj.serviceDescription) console.log('description:', jj.serviceDescription.slice(0, 300));
+          for (const l of jj.layers ?? []) console.log(`layer ${l.id}: ${l.name}`);
+          for (const l of jj.tables ?? []) console.log(`table ${l.id}: ${l.name}`);
+        }
       }
     }
     else if (j === 'values') {
