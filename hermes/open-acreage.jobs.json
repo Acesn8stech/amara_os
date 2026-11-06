@@ -1,0 +1,16 @@
+{
+  "lane": "open-acreage-sync",
+  "constitution": "see src/lib/open-acreage/constitution.ts",
+  "flow": "AMARA -> Hermes job -> Referee/Mirofish validation -> AMARA",
+  "defaults": { "retries": 3, "backoff": "exponential", "timeout_minutes": 30, "log_to": "sync_run", "kill_switch_env": "OA_KILL_SWITCH" },
+  "jobs": [
+    { "name": "ul_sync", "schedule": "10 2 * * *", "tz": "America/Chicago", "cmd": "npm run oa -- ul_sync", "kill_switch_env": "OA_KILL_UL", "note": "checks editingInfo.lastEditDate per layer; full re-pull only when changed" },
+    { "name": "blm_sync", "schedule": "40 2 * * *", "tz": "America/Chicago", "cmd": "npm run oa -- blm_sync", "kill_switch_env": "OA_KILL_BLM", "note": "state filter discovered from service at runtime" },
+    { "name": "glo_sync", "schedule": "10 3 * * *", "tz": "America/Chicago", "cmd": "npm run oa -- glo_sync", "kill_switch_env": "OA_KILL_GLO", "note": "STUB — endpoint NOT FOUND" },
+    { "name": "rrc_sync", "schedule": "30 3 * * *", "tz": "America/Chicago", "cmd": "npm run oa -- rrc_sync", "kill_switch_env": "OA_KILL_RRC", "note": "daily check; loads only when new monthly files are staged in OA_RRC_DIR; layouts UNVERIFIED" },
+    { "name": "diff_engine", "after": ["ul_sync", "blm_sync", "glo_sync", "rrc_sync"], "cmd": "npm run oa -- diff_engine", "note": "runs inline on promote; entry kept for dependency graph" },
+    { "name": "candidate_builder", "after": ["diff_engine"], "cmd": "npm run oa -- candidate_builder" },
+    { "name": "alert_push", "after": ["candidate_builder"], "cmd": "npm run oa -- alert_push", "note": "Slack digest; needs SLACK_WEBHOOK_URL (added last)" }
+  ],
+  "failure_policy": "one failed source never blocks the others; run marked PARTIAL/FAILED in sync_run"
+}

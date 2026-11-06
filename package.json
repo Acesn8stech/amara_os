@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:open-acreage": "node --experimental-strip-types --no-warnings --test src/lib/open-acreage/__tests__/open-acreage.test.ts",
+    "oa": "node --experimental-strip-types --no-warnings scripts/open-acreage/run.ts"
   },
   "dependencies": {
     "next": "16.2.2",
