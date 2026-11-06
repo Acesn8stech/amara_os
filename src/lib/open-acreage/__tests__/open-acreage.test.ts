@@ -281,3 +281,17 @@ test('voice: a target county with no section data answers NOT FOUND, not zero', 
   const txt = answer({ kind: 'candidate_count', county: 'Midland' }, { leases: [], candidates: [], changes: [], runs: freshRuns(), countyOfEntity: () => null, sectionCounts: { reeves: 5 } }, cfg({ targetCounties: ['Midland'] }), NOW);
   assert.match(txt, /NOT FOUND/); assert.doesNotMatch(txt, /^0 /);
 });
+
+test('RRC is a good sync only with permits AND production; permits alone is UNVERIFIED', () => {
+  const mkLayout = (id: string, fields: Array<{ name: string; start: number; length: number; type: 'char' }>) => ({ id, recordLength: 10, encoding: 'ascii' as const, verified: true, fields });
+  const layouts = {
+    permit: mkLayout('p', [{ name: 'permit_no', start: 0, length: 5, type: 'char' }]),
+    production_oil: mkLayout('o', [{ name: 'well_or_lease_id', start: 0, length: 5, type: 'char' }, { name: 'month', start: 5, length: 5, type: 'char' }]),
+    production_gas: mkLayout('g', [{ name: 'well_or_lease_id', start: 0, length: 5, type: 'char' }]),
+  };
+  const bytes = new TextEncoder().encode('12345abcde');
+  const f = (kind: 'permit' | 'production_oil' | 'production_gas') => ({ kind, url: 'u', bytes, source_updated_at: null });
+  const partial = decodeRRC([f('permit')], { now: NOW }, layouts as never);
+  assert.equal(partial.state, 'UNVERIFIED'); assert.match(partial.notes.join(), /missing required datasets: production_oil, production_gas/);
+  assert.equal(decodeRRC([f('permit'), f('production_oil'), f('production_gas')], { now: NOW }, layouts as never).state, 'OK');
+});

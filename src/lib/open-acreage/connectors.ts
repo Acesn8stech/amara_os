@@ -212,7 +212,10 @@ export const RRC_PAGE = 'https://www.rrc.texas.gov/resource-center/research/data
 export interface RrcFile { kind: 'permit' | 'production_oil' | 'production_gas'; url: string; bytes: Uint8Array; source_updated_at: string | null }
 
 /** Decode already-downloaded RRC files with verified layouts. Downloads are done by the Hermes job (file names/links unconfirmed). */
-export function decodeRRC(files: RrcFile[], ctx: Pick<ConnectorContext, 'now'>, layouts: Record<string, RecordLayout> = RRC_LAYOUTS): ConnectorResult {
+/** RRC counts as a good sync only when every required kind decoded: permits alone would let the candidate rules pass vacuously on production. */
+export const RRC_REQUIRED_KINDS: RrcFile['kind'][] = ['permit', 'production_oil', 'production_gas'];
+
+export function decodeRRC(files: RrcFile[], ctx: Pick<ConnectorContext, 'now'>, layouts: Record<string, RecordLayout> = RRC_LAYOUTS, required: RrcFile['kind'][] = RRC_REQUIRED_KINDS): ConnectorResult {
   const notes: string[] = []; const layers: LayerPull[] = []; let failed = 0;
   for (const f of files) {
     const layout = layouts[f.kind];
@@ -235,7 +238,9 @@ export function decodeRRC(files: RrcFile[], ctx: Pick<ConnectorContext, 'now'>, 
       layers.push({ layer: f.kind, url: f.url, entity_type: entity, skipped_unchanged: false, source_updated_at: f.source_updated_at, records, unmapped: [], fields_discovered: layout.fields.map((x) => x.name) });
     } catch (e) { failed++; notes.push(`${f.kind}: ${(e as Error).message}`); }
   }
-  return { source: 'RRC', state: failed === 0 && layers.length ? 'OK' : 'UNVERIFIED', layers, notes };
+  const missing = required.filter((k) => !layers.some((l) => l.layer === k));
+  if (missing.length) notes.push(`RRC incomplete — missing required datasets: ${missing.join(', ')} (not a good sync; candidates stay HOLD)`);
+  return { source: 'RRC', state: failed === 0 && layers.length && !missing.length ? 'OK' : 'UNVERIFIED', layers, notes };
 }
 const parseYmd = (v: unknown) => { const s = v == null ? '' : String(v); return /^\d{8}$/.test(s) ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}` : null; };
 const parseYm = (v: unknown) => { const s = v == null ? '' : String(v); return /^\d{6}$/.test(s) ? `${s.slice(0, 4)}-${s.slice(4, 6)}-01` : null; };
