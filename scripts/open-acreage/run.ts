@@ -5,11 +5,12 @@ import { readFileSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig } from '../../src/lib/open-acreage/config.ts';
 import { CONSTITUTION_VERSION } from '../../src/lib/open-acreage/constitution.ts';
-import { BLM_SERVICE, UL_LAYERS, decodeRRC, RRC_PAGE, pullBLM, pullGLO, pullUL, type ConnectorContext, type RrcFile } from '../../src/lib/open-acreage/connectors.ts';
+import { BLM_SERVICE, UL_LAYERS, decodeRRC, RRC_PAGE, pullBLM, pullGLO, pullUL, type ConnectorContext, type ConnectorResult, type RrcFile } from '../../src/lib/open-acreage/connectors.ts';
 import { rebuildCandidates, runSource } from '../../src/lib/open-acreage/runner.ts';
 import { FileStore, type Store } from '../../src/lib/open-acreage/store.ts';
 import { storeFromEnv } from '../../src/lib/open-acreage/supabase-store.ts';
 import { fetchDistinct, fetchLayerInfo } from '../../src/lib/open-acreage/arcgis.ts';
+import { PDQ_LEASE_CYCLE, PDQ_WELL_COMPLETION, api8, combineRRC, pullPdq, unzipLines } from '../../src/lib/open-acreage/pdq.ts';
 import { buildDigest, pushSlack } from '../../src/lib/open-acreage/digest.ts';
 
 const [job = 'all', ...flags] = process.argv.slice(2);
@@ -42,8 +43,23 @@ async function main() {
     else if (j === 'blm_sync') console.log(JSON.stringify(await runSource('BLM', async () => pullBLM(await ctx([], 'BLM')), store, cfg, now), null, 1), BLM_SERVICE);
     else if (j === 'glo_sync') console.log(JSON.stringify(await runSource('GLO', pullGLO, store, cfg, now), null, 1));
     else if (j === 'rrc_sync') {
-      const files = rrcFiles();
-      console.log(JSON.stringify(await runSource('RRC', async () => files.length ? decodeRRC(files, { now }) : { source: 'RRC', state: 'NOT FOUND', layers: [], notes: ['no RRC files staged (OA_RRC_DIR empty) — download step not run / links unconfirmed'] }, store, cfg, now), null, 1));
+      console.log(JSON.stringify(await runSource('RRC', async () => {
+        const parts: ConnectorResult[] = []; const dir = process.env.OA_RRC_DIR;
+        // Permits / EBCDIC production: fixed-width decode (layouts must be verified, else the decoder refuses).
+        const files = rrcFiles();
+        if (files.length) parts.push(decodeRRC(files, { now }, undefined, files.map((f) => f.kind)));
+        // Production Data Query Dump: PDQ_DSV.zip, read by column name; attributed to our wells by 8-digit API.
+        const zip = dir ? join(dir, 'PDQ_DSV.zip') : '';
+        if (zip && existsSync(zip)) {
+          const wanted = new Set<string>(); for (const w of await store.getAll('well')) { const a = api8(w.api_no); if (a) wanted.add(a); }
+          const d = new Date(now); d.setUTCMonth(d.getUTCMonth() - (cfg.productionMonths + 2));
+          const cutoffYm = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+          parts.push(await pullPdq({ wellCompletion: unzipLines(zip, PDQ_WELL_COMPLETION), leaseCycle: unzipLines(zip, PDQ_LEASE_CYCLE) },
+            { wantedApi8: wanted, cutoffYm, now, sourceUrl: `${RRC_PAGE}#production-data-query-dump`, sourceUpdatedAt: statSync(zip).mtime.toISOString() }));
+        }
+        if (!parts.length) return { source: 'RRC' as const, state: 'NOT FOUND' as const, layers: [], notes: ['no RRC files staged (OA_RRC_DIR: permit.dat and/or PDQ_DSV.zip) — download step not run'] };
+        return combineRRC(parts);
+      }, store, cfg, now), null, 1));
     }
     // diff_engine runs inside runSource (after each promote); listed as a job for the scheduler's dependency graph.
     else if (j === 'rrc_links') {

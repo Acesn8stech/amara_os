@@ -1,4 +1,5 @@
 import { ALLOWED_CANDIDATE_STATUSES, CANDIDATE_STATUS, CONSTITUTION_VERSION, type CandidateStatus } from './constitution.ts';
+import { api8 } from './pdq.ts';
 import { centroid, haversineMiles, intersects, pointInGeometry } from './geometry.ts';
 import type { OpenAcreageConfig } from './config.ts';
 import type { Candidate, LeaseRecord, PermitRecord, ProductionRecord, Section, SyncRun, WellRecord, BaseRecord } from './types.ts';
@@ -44,8 +45,8 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
   const permitCut = addMonths(today, cfg.permitMonths); const prodCut = addMonths(today, cfg.productionMonths).slice(0, 7) + '-01';
   const stale = staleSources(inp.runs, cfg, nowIso);
 
-  const producingIds = new Set(inp.production.filter((p) => p.month && p.month >= prodCut && ((p.oil_bbl ?? 0) > 0 || (p.gas_mcf ?? 0) > 0)).map((p) => p.well_or_lease_id));
-  const wellProducing = (w: WellRecord) => (w.api_no && producingIds.has(w.api_no)) || producingIds.has(w.source_record_id);
+  const producingIds = new Set(inp.production.filter((p) => p.month && p.month >= prodCut && ((p.oil_bbl ?? 0) > 0 || (p.gas_mcf ?? 0) > 0 || (Number(p.cond_bbl) || 0) > 0 || (Number(p.csgd_mcf) || 0) > 0)).map((p) => p.well_or_lease_id));
+  const wellProducing = (w: WellRecord) => { const a = api8(w.api_no); return (a !== null && producingIds.has(a)) || (!!w.api_no && producingIds.has(w.api_no)) || producingIds.has(w.source_record_id); };
   const out: Candidate[] = [];
 
   for (const sec of inp.sections) {

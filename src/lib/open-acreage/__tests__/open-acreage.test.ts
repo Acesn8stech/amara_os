@@ -13,6 +13,7 @@ import { runSource } from '../runner.ts';
 import { MemoryStore } from '../store.ts';
 import { answer, parseIntent } from '../voice.ts';
 import { buildDigest } from '../digest.ts';
+import { api8, combineRRC, pullPdq } from '../pdq.ts';
 import type { BaseRecord, Geometry, LeaseRecord, Section, SyncRun } from '../types.ts';
 
 const NOW = '2026-11-06T12:00:00.000Z';
@@ -294,4 +295,32 @@ test('RRC is a good sync only with permits AND production; permits alone is UNVE
   const partial = decodeRRC([f('permit')], { now: NOW }, layouts as never);
   assert.equal(partial.state, 'UNVERIFIED'); assert.match(partial.notes.join(), /missing required datasets: production_oil, production_gas/);
   assert.equal(decodeRRC([f('permit'), f('production_oil'), f('production_gas')], { now: NOW }, layouts as never).state, 'OK');
+});
+
+test('PDQ: reads by column name, joins lease->API->our wells, windows by month, refuses a bad header, UL 10-digit API matches', async () => {
+  assert.equal(api8('4247536324'), '47536324'); assert.equal(api8('47536324'), '47536324'); assert.equal(api8('abc'), null); assert.equal(api8('123'), null);
+  const wc = ['OIL_GAS_CODE}DISTRICT_NO}LEASE_NO}WELL_NO}API_COUNTY_CODE}API_UNIQUE_NO}COUNTY_NAME',
+    'O}08}012345}1}475}36324}WARD', 'O}08}999999}1}003}00001}ANDREWS', 'O}08}012345}2}475}99999}WARD'];
+  const lc = ['LEASE_NO}OIL_GAS_CODE}DISTRICT_NO}CYCLE_YEAR_MONTH}LEASE_OIL_PROD_VOL}LEASE_GAS_PROD_VOL}LEASE_COND_PROD_VOL}LEASE_CSGD_PROD_VOL}EXTRA',
+    '012345}O}08}202606}150}}}0}x', '012345}O}08}201001}999}}}0}x', '999999}O}08}202606}500}}}0}x', '012345}O}08}202607}0}0}0}0}x'];
+  const o = { wantedApi8: new Set(['47536324']), cutoffYm: '202501', now: NOW, sourceUrl: 'https://rrc/pdq', sourceUpdatedAt: null };
+  const r = await pullPdq({ wellCompletion: wc, leaseCycle: lc }, o);
+  const recs = r.layers[0].records as BaseRecord[];
+  assert.equal(recs.length, 2, 'old month and unrelated lease excluded');
+  assert.deepEqual(recs.map((x) => [x.well_or_lease_id, x.month, x.oil_bbl]), [['47536324', '2026-06-01', 150], ['47536324', '2026-07-01', 0]]);
+  assert.equal(recs[0].gas_mcf, null, 'blank volume stays NULL, not 0');
+  await assert.rejects(pullPdq({ wellCompletion: ['OIL_GAS_CODE}LEASE_NO', 'O}1'], leaseCycle: lc }, o), /missing required columns/);
+  const well = { entity_type: 'well', source_name: 'UL', source_url: 'u', source_layer: 'WellSHL', source_record_id: 'W', source_updated_at: null, retrieved_at: NOW, raw: {},
+    geom: { type: 'Point', coordinates: [-103.95, 31.05] }, api_no: '4247536324', status: null, county: 'Reeves' } as BaseRecord;
+  const prod = { ...recs[0], month: '2026-06-01' } as BaseRecord;
+  assert.equal(buildCandidates(inputs({ wells: [well], production: [prod] }), cfg(), NOW).length, 0);
+  assert.equal(buildCandidates(inputs({ wells: [well], production: [{ ...prod, oil_bbl: 0, gas_mcf: 0, cond_bbl: 0, csgd_mcf: 0 } as BaseRecord] }), cfg(), NOW).length, 1);
+});
+
+test('combineRRC: permits alone or production alone is UNVERIFIED; both is OK', () => {
+  const part = (layer: string, state: 'OK' | 'UNVERIFIED' = 'OK') => ({ source: 'RRC' as const, state, notes: [], layers: [{ layer, url: 'u', entity_type: 'permit' as const, skipped_unchanged: false, source_updated_at: null, records: [], unmapped: [], fields_discovered: [] }] });
+  assert.equal(combineRRC([part('production')]).state, 'UNVERIFIED');
+  assert.equal(combineRRC([part('permit')]).state, 'UNVERIFIED');
+  assert.equal(combineRRC([part('permit'), part('production')]).state, 'OK');
+  assert.equal(combineRRC([]).state, 'NOT FOUND');
 });
