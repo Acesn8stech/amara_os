@@ -67,6 +67,11 @@ export const UL_LEASE_STATUS: Record<string, StatusNormalized> = {
   'producing (pt)': 'ACTIVE',
   'primary term non-producing': 'ACTIVE', // still inside its primary term => in force
   'shut-in royalty': 'ACTIVE', // lease maintained by shut-in royalty payments
+  // BLM Oil_Gas_Leases_Case_Disp.CSE_DISP (one layer per value, read live 2026-11-06). 'Authorized' = lease issued/in force;
+  // 'Closed' = source-stated closure (cause/date not given, so INACTIVE not EXPIRED); Pending/Interim not stated as in force.
+  'authorized': 'ACTIVE',
+  'closed': 'INACTIVE',
+  'interim': 'UNKNOWN',
   'non producing': 'UNKNOWN',
   'pending': 'UNKNOWN',
   'under review': 'UNKNOWN',

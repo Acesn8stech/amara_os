@@ -44,14 +44,14 @@ export const UL_LAYERS: Array<{ layer: string; path: string; entity: EntityType 
 // whatever does not match stays NULL and is reported in `unmapped` — never guessed.
 const A = {
   id: ['LEASE_ID', 'LEASE_NO', 'LEASENUMBER', 'LEASE_NUMBER', 'API', 'API_NO', 'PARCEL_ID', 'SECTION_ID', 'GlobalID', 'GLOBALID'],
-  leaseNo: ['LEASE_NO', 'LEASE_NUMBER', 'LEASENUMBER', 'LEASE_ID', 'LEASE', 'CASE_SERIAL_NUMBER', 'CSE_NR', 'LEASE_NUM', 'UTLeaseNbr'],
+  leaseNo: ['LEG_CSE_NR', 'LEASE_NO', 'LEASE_NUMBER', 'LEASENUMBER', 'LEASE_ID', 'LEASE', 'CASE_SERIAL_NUMBER', 'CSE_NR', 'LEASE_NUM', 'UTLeaseNbr'],
   lessee: ['LESSEE', 'LESSEE_NAME', 'OPERATOR', 'CUSTOMER_NAME', 'CUST_NAME', 'MapLesseeName', 'OriginalLessee', 'CurrentOwner'],
   status: ['STATUS', 'LEASE_STATUS', 'LSE_STATUS', 'CSE_DISP', 'CASE_DISPOSITION', 'DISPOSITION', 'WELL_STATUS', 'LeaseStatus', 'WellboreStatusCode', 'ZoneStatus'],
-  eff: ['EFFECTIVE_DATE', 'EFF_DATE', 'LEASE_DATE', 'LEASE_EFF_DATE', 'CSE_EFF_DATE', 'EFFECTIVE_DT', 'START_DATE', 'DateBeginning'],
-  exp: ['EXPIRATION_DATE', 'EXP_DATE', 'EXPIRY_DATE', 'LEASE_EXP_DATE', 'CSE_EXP_DATE', 'PRIMARY_TERM_END', 'EXPIRES'],
-  acres: ['ACRES', 'ACREAGE', 'GIS_ACRES', 'LEASE_ACRES', 'CSE_ACRES', 'TOTAL_ACRES', 'MineralAcres', 'CalcAcres'],
+  eff: ['EFFECTIVE_DATE', 'EFF_DATE', 'LEASE_DATE', 'LEASE_EFF_DATE', 'CSE_EFF_DATE', 'EFFECTIVE_DT', 'START_DATE', 'DateBeginning', 'EFF_DT'],
+  exp: ['EXPIRATION_DATE', 'EXP_DATE', 'EXPIRY_DATE', 'LEASE_EXP_DATE', 'CSE_EXP_DATE', 'PRIMARY_TERM_END', 'EXPIRES', 'EXP_DT'],
+  acres: ['ACRES', 'ACREAGE', 'GIS_ACRES', 'LEASE_ACRES', 'CSE_ACRES', 'TOTAL_ACRES', 'MineralAcres', 'CalcAcres', 'RCRD_ACRS'],
   county: ['COUNTY', 'COUNTY_NAME', 'CNTY', 'CNTY_NAME'],
-  state: ['STATE', 'STATE_ABBR', 'ST', 'ADMIN_ST', 'ADM_ST', 'STATE_CODE', 'STATE_NAME'],
+  state: ['GEO_STATE', 'STATE', 'STATE_ABBR', 'ST', 'ADMIN_ST', 'ADM_ST', 'STATE_CODE', 'STATE_NAME'],
   api: ['API', 'API_NO', 'API_NUMBER', 'API14', 'API10'],
   operator: ['OPERATOR', 'OPERATOR_NAME', 'OPER_NAME', 'CompanyName'],
   spud: ['SPUD_DATE', 'SPUD', 'SpudDate'],
@@ -72,10 +72,10 @@ function recordId(props: Record<string, unknown>, info: LayerInfo): string | nul
 }
 
 function mapFeature(entity: EntityType, source: 'UL' | 'BLM', lessor: LeaseRecord['lessor_type'] | null, layer: string,
-  f: { properties: Record<string, unknown>; geometry: unknown }, info: LayerInfo, ctx: ConnectorContext): BaseRecord {
+  f: { properties: Record<string, unknown>; geometry: unknown }, info: LayerInfo, ctx: ConnectorContext, idPrefix = ''): BaseRecord {
   const p = f.properties;
   const base = {
-    source_name: source, source_url: info.url, source_layer: layer, source_record_id: recordId(p, info),
+    source_name: source, source_url: info.url, source_layer: layer, source_record_id: ((id) => (id && idPrefix ? `${idPrefix}${id}` : id))(recordId(p, info)),
     source_updated_at: info.lastEditDate, retrieved_at: ctx.now, raw: p, geom: toGeometry(f.geometry),
   };
   switch (entity) {
@@ -164,7 +164,10 @@ export async function pullBLM(ctx: ConnectorContext): Promise<ConnectorResult> {
     } catch (e) { notes.push(`BLM /layers fallback failed: ${(e as Error).message}`); }
   }
   // A single-layer service named for oil & gas leases needs no name match; otherwise require /lease/ in the layer name.
-  const leaseLayers = all.length === 1 ? all : all.filter((l) => /lease/i.test(l.name));
+  // Oil_Gas_Leases_Case_Disp is split by disposition (Authorized / Pending / Interim / Closed): every layer of an oil-and-gas-lease
+  // service is a lease layer. Otherwise a single layer, or names containing "lease".
+  const leaseService = /oil_gas_lease/i.test(svcUrl);
+  const leaseLayers = leaseService || all.length === 1 ? all : all.filter((l) => /lease/i.test(l.name));
   notes.push(`BLM layers discovered: ${all.map((l) => `${l.id}:${l.name}`).join(', ') || 'none'}`);
   if (!leaseLayers.length) return { source: 'BLM', state: 'UNVERIFIED', layers, notes: [...notes, all.length ? 'No layer name matched /lease/ — cannot choose a layer without guessing; Scott to pick layer id.' : 'Service exposes no layers — cannot pull.'] };
 
@@ -187,7 +190,7 @@ export async function pullBLM(ctx: ConnectorContext): Promise<ConnectorResult> {
       notes.push(`${L.name}: state filter discovered: ${where}`);
       const feats = await fetchAllFeatures(info, ctx, where);
       layers.push({ layer: L.name, url, entity_type: 'lease', skipped_unchanged: false, source_updated_at: info.lastEditDate,
-        records: feats.map((f) => mapFeature('lease', 'BLM', 'FEDERAL', L.name, f, info, ctx)),
+        records: feats.map((f) => mapFeature('lease', 'BLM', 'FEDERAL', L.name, f, info, ctx, `${L.id}:`)),
         unmapped: unmappedFor('lease', info), fields_discovered: info.fields.map((f) => f.name) });
     } catch (e) { failures++; notes.push(`${L.name}: ${(e as Error).message}`); }
   }

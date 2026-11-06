@@ -230,3 +230,22 @@ test('BLM: root without layers falls back to /layers, reports keys, picks a sing
   assert.match(r.notes.join('\n'), /no layers array; keys=\[serviceDescription\]/);
   assert.equal(r.layers[0].records.length, 1); assert.match(r.notes.join('\n'), /ADMIN_ST IN \('NM'\)/);
 });
+
+test('BLM Case_Disp: pulls all disposition layers, filters on GEO_STATE (not ADMIN_STATE), maps CSE_* fields, prefixes ids by layer', async () => {
+  const fields = ['ADMIN_STATE', 'GEO_STATE', 'CSE_DISP', 'CSE_NR', 'LEG_CSE_NR', 'EFF_DT', 'EXP_DT', 'RCRD_ACRS'];
+  const wheres: string[] = [];
+  const f = (async (u: string) => {
+    const j = (o: unknown) => new Response(JSON.stringify(o));
+    if (u === `${BLM_SERVICE}?f=json`) return j({ layers: [{ id: 0, name: 'Authorized' }, { id: 3, name: 'Closed' }] });
+    if (/\/\d\?f=json$/.test(u)) return j({ maxRecordCount: 2000, fields: [{ name: 'OBJECTID', type: 'esriFieldTypeOID' }, ...fields.map((name) => ({ name, type: 'esriFieldTypeString' }))] });
+    if (u.includes('returnDistinctValues')) return j({ features: ['NM', 'TX', 'OK'].map((v) => ({ attributes: { GEO_STATE: v } })) });
+    wheres.push(decodeURIComponent(new URL(u).searchParams.get('where')!));
+    return j({ features: [{ properties: { OBJECTID: 5, ADMIN_STATE: 'NM', GEO_STATE: 'TX', CSE_DISP: u.includes('/3/') ? 'Closed' : 'Authorized', CSE_NR: 'X1', LEG_CSE_NR: 'NMNM   075445', EFF_DT: 815356740000, EXP_DT: 1900000000000, RCRD_ACRS: 640 }, geometry: null }] });
+  }) as unknown as typeof fetch;
+  const r = await pullBLM({ fetch: f, timeoutMs: 1000, retries: 0, now: NOW, priorEdit: {} });
+  assert.equal(r.layers.length, 2); assert.ok(wheres.every((w) => w === "GEO_STATE IN ('NM','TX')"), wheres.join());
+  const a = r.layers[0].records[0] as LeaseRecord; const c = r.layers[1].records[0] as LeaseRecord;
+  assert.deepEqual([a.status_normalized, c.status_normalized], ['ACTIVE', 'INACTIVE']);
+  assert.deepEqual([a.lease_no, a.state, a.acres, a.effective_date, a.expiration_date, a.county, a.lessee], ['NMNM   075445', 'TX', 640, '1995-11-02', '2030-03-17', null, null]);
+  assert.deepEqual([a.source_record_id, c.source_record_id], ['0:5', '3:5']);
+});
