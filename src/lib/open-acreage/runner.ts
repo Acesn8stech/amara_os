@@ -39,7 +39,7 @@ export async function runSource(source: 'UL' | 'BLM' | 'GLO' | 'RRC', pull: () =
     run.status = bad > 0 ? 'FAILED' : res.state === 'OK' ? 'OK' : res.layers.length || res.state === 'NOT FOUND' ? 'PARTIAL' : 'FAILED';
   } catch (e) { errors.push((e as Error).message); run.status = 'FAILED'; run.source_state = 'UNREACHABLE'; }
   run.error_log = errors.length ? errors.join('\n') : null;
-  run.finished_at = now;
+  run.finished_at = new Date().toISOString(); // real completion time (staleness and duration depend on it)
   await store.saveRun(run);
   return run;
 }
