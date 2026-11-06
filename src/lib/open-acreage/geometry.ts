@@ -74,6 +74,10 @@ export function intersects(a: Geometry, b: Geometry): boolean {
   if (!ba || !bb || !bboxOverlap(ba, bb)) return false;
   if (a.type === 'Point') return b.type === 'Point' ? a.coordinates[0] === b.coordinates[0] && a.coordinates[1] === b.coordinates[1] : pointInGeometry([a.coordinates[0], a.coordinates[1]], b);
   if (b.type === 'Point') return pointInGeometry([b.coordinates[0], b.coordinates[1]], a);
+  // Identical or collinear-edged polygons (a whole-section lease over its section) defeat the vertex/edge tests above, so also test
+  // representative interior points: missing an overlap would offer a leased tract as a candidate (the unsafe direction).
+  const ca = centroid(a); const cb = centroid(b);
+  if ((ca && pointInGeometry(ca, b)) || (cb && pointInGeometry(cb, a))) return true;
   const pa = polys(a); const pb = polys(b);
   for (const A of pa) for (const B of pb) {
     if (A[0].some((v) => pointInGeometry([v[0], v[1]], { type: 'Polygon', coordinates: B }))) return true;

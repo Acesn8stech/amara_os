@@ -4,6 +4,7 @@ import { DEFAULT_CONFIG, type OpenAcreageConfig } from '../config.ts';
 import { CANDIDATE_STATUS, CONSTITUTION_VERSION } from '../constitution.ts';
 import { validateBatch } from '../validate.ts';
 import { buildCandidates, assertStatus, staleSources } from '../candidates.ts';
+import { intersects } from '../geometry.ts';
 import { diffRecords } from '../diff.ts';
 import { decodePacked, decodeFile, decodeZoned } from '../fixedwidth.ts';
 import { dateField, normalizeStatus } from '../normalize.ts';
@@ -264,4 +265,14 @@ test('first load of a layer emits no change events; later changes do; digest use
   assert.deepEqual(ch.map((c) => c.change_type), ['STATUS_CHANGE']);
   const digest = await buildDigest(store, cfg(), new Date().toISOString());
   assert.match(digest, /newly expired\/inactive \(24h\): 1/); assert.match(digest, /latest run\): none/);
+});
+
+test('geometry: identical, contained, partially-overlapping and disjoint polygons', () => {
+  const a = sq(-104, 31); // 0.1 square
+  assert.equal(intersects(a, sq(-104, 31)), true, 'identical (whole-section lease over its section)');
+  assert.equal(intersects(a, sq(-103.98, 31.02, 0.05)), true, 'contained');
+  assert.equal(intersects(a, sq(-103.95, 31.05)), true, 'partial overlap');
+  assert.equal(intersects(sq(-104, 31, 0.1), sq(-104, 31, 0.1)), true);
+  assert.equal(intersects(a, sq(-103, 31)), false, 'disjoint');
+  assert.equal(buildCandidates(inputs({ leases: [lease('Same', { status_normalized: 'ACTIVE', geom: sq(-104, 31) })] }), cfg(), NOW).length, 0, 'same-shape active lease excludes the section');
 });
