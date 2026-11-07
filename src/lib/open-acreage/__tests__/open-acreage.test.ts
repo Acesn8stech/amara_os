@@ -525,3 +525,12 @@ test('permit rule 2: buffered coordinate test and text match for permits without
   assert.equal(run([amended]).length, 0, 'recent amendment keeps the tract off the list');
   assert.equal(run([{ ...amended, activity_date: '2022-03-29' } as BaseRecord]).length, 1, 'nothing recent');
 });
+
+test('text matching works on sections that only have raw attributes (loaded before block_no/section_no existed)', () => {
+  const old = { ...section('S1'), county: 'Reeves', raw: { blocknum: '8', sectionnum: '17' } } as Section; // no block_no / section_no fields
+  const permit = { entity_type: 'permit', source_name: 'RRC', source_url: 'u', source_layer: 'permit', source_record_id: 'p', source_updated_at: null, retrieved_at: NOW, raw: {},
+    geom: null, permit_status: 'APPROVED', issued_date: '2026-09-01', county: 'REEVES', locations: [{ kind: 'surface', county: null, section: '17', block: '8', survey: 'UL', abstract: '' }] } as BaseRecord;
+  assert.equal(buildCandidates(inputs({ sections: [old], permits: [permit] }), cfg(), NOW).length, 0);
+  const noNumbers = { ...old, raw: {} } as Section;
+  assert.equal(buildCandidates(inputs({ sections: [noNumbers], permits: [permit] }), cfg(), NOW).length, 1, 'a section with no block/section can never be text-matched (blank never equals blank)');
+});

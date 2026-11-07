@@ -13,7 +13,7 @@ import { fetchDistinct, fetchLayerInfo } from '../../src/lib/open-acreage/arcgis
 import { PDQ_LEASE_CYCLE, PDQ_WELL_COMPLETION, api8, combineRRC, pdqLeaseApiMap, pullPdq, unzipLines, zipMemberDate } from '../../src/lib/open-acreage/pdq.ts';
 import { pullPermitMaster } from '../../src/lib/open-acreage/permitmaster.ts';
 import { listPendingRuns, pullPending } from '../../src/lib/open-acreage/pending.ts';
-import { normCounty, normNum, permitHits, ulSurvey } from '../../src/lib/open-acreage/candidates.ts';
+import { normCounty, normNum, permitHits, sectionBlock, sectionNumber, ulSurvey } from '../../src/lib/open-acreage/candidates.ts';
 import type { PermitRecord, Section } from '../../src/lib/open-acreage/types.ts';
 import { buildDigest, pushSlack } from '../../src/lib/open-acreage/digest.ts';
 
@@ -84,7 +84,7 @@ async function main() {
       const cut = new Date(now); cut.setUTCMonth(cut.getUTCMonth() - cfg.permitMonths); const cutIso = cut.toISOString().slice(0, 10);
       const active = permits.filter((p) => (typeof p.activity_date === 'string' ? p.activity_date : p.issued_date) as string >= cutIso && p.source_layer === 'permit');
       const keyOf = (county: string | null | undefined, block: unknown, section: unknown) => `${normCounty(county)}|${normNum(block)}|${normNum(section)}`;
-      const byKey = new Map<string, Section[]>(); for (const s of secs) { const k = keyOf(s.county, s.block_no, s.section_no); byKey.set(k, [...(byKey.get(k) ?? []), s]); }
+      const byKey = new Map<string, Section[]>(); for (const s of secs) { const k = keyOf(s.county, sectionBlock(s), sectionNumber(s)); byKey.set(k, [...(byKey.get(k) ?? []), s]); }
       const targets = new Set(cfg.targetCounties.map(normCounty));
       let ulLocs = 0, ulMatched = 0; const unmatched: string[] = []; const perCounty: Record<string, { ulPermits: number; matched: number }> = {};
       for (const p of active) for (const l of ((p.locations as Array<{ county: string | null; section: string; block: string; survey: string }> | undefined) ?? [])) {

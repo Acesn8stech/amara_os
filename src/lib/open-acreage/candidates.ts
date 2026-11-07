@@ -40,6 +40,9 @@ export function assertStatus(s: string): CandidateStatus {
   return s as CandidateStatus;
 }
 
+/** Block and section of a UL section: the derived fields if present, else the source attributes (sections loaded before those fields existed only have raw). */
+export const sectionBlock = (sec: { block_no?: unknown; raw?: Record<string, unknown> }) => sec.block_no ?? sec.raw?.blocknum;
+export const sectionNumber = (sec: { section_no?: unknown; raw?: Record<string, unknown> }) => sec.section_no ?? sec.raw?.sectionnum;
 export const normCounty = norm;
 export const normNum = num;
 export const ulSurvey = isUlSurvey;
@@ -48,7 +51,8 @@ export const ulSurvey = isUlSurvey;
 export function permitHits(p: PermitRecord, sec: Section, cfg: Pick<OpenAcreageConfig, 'permitBufferMiles'>): { spatial: boolean; text: boolean } {
   const spatial = !!p.geom && !!sec.geom && pointNearGeometry([p.geom.coordinates[0] as number, p.geom.coordinates[1] as number], sec.geom, cfg.permitBufferMiles);
   const locs = (p.locations as Array<{ county: string | null; section: string; block: string; survey: string }> | undefined) ?? [];
-  const text = num(sec.block_no) !== '' && locs.some((l) => isUlSurvey(l.survey) && norm(l.county ?? p.county) === norm(sec.county) && num(l.block) === num(sec.block_no) && num(l.section) === num(sec.section_no));
+  const sb = num(sectionBlock(sec)); const ss = num(sectionNumber(sec));
+  const text = sb !== '' && ss !== '' && locs.some((l) => isUlSurvey(l.survey) && norm(l.county ?? p.county) === norm(sec.county) && num(l.block) === sb && num(l.section) === ss);
   return { spatial, text };
 }
 
