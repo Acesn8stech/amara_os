@@ -13,10 +13,31 @@ import type { BaseRecord } from './types.ts';
  */
 export const PENDING_SHARE_URL = 'https://mft.rrc.texas.gov/link/0ad92a65-4212-49a1-98a7-d667a55fb497';
 const PERMIT_COLS = ['UNIVERSAL_DOC_NO', 'OPERATOR_NAME', 'OPERATOR_NUMBER', 'SUBMIT_DATE'];
-const WELLBORE_COLS = ['UNIVERSAL_DOC_NO', 'COUNTY_CODE', 'LAT_DEGREES', 'LONG_DEGREES', 'LATLONG_TYPE_CODE'];
+const WELLBORE_COLS = ['UNIVERSAL_DOC_NO', 'COUNTY_CODE', 'LAT_DEGREES', 'LONG_DEGREES', 'LAT_MINUTES', 'LAT_SECONDS', 'LONG_MINUTES', 'LONG_SECONDS', 'LATLONG_TYPE_CODE'];
 
 // FIPS codes of the configured target counties only (public standard). Any other code is written as "UNVERIFIED code NNN", never guessed.
 export const PENDING_COUNTY: Record<string, string> = { '003': 'ANDREWS', '135': 'ECTOR', '173': 'GLASSCOCK', '317': 'MARTIN', '329': 'MIDLAND', '383': 'REAGAN', '461': 'UPTON' };
+
+/**
+ * Wellbore surface coordinates (manual pendingdrillingpermits.pdf v2.2): reported in ONE of three styles —
+ *   decimal degrees (LAT_DEGREES/LONG_DEGREES hold the full value; minutes/seconds empty),
+ *   degrees-minutes-seconds (LAT_DEGREES + LAT_MINUTES + LAT_SECONDS; LONG_DEGREES is negative), or
+ *   state plane (STATE_PLANE_ZONE_CODE + X/Y, no lat/long) — not converted here (needs a projection): geometry NULL.
+ * LATLONG_TYPE_CODE is the DATUM (1 NAD27, 2 NAD83, 3 WGS84), not a format flag.
+ */
+export function wellboreCoord(wb: Record<string, string>): { lon: number; lat: number; style: 'decimal' | 'dms'; datum: string } | null {
+  const num = (v: string | undefined) => (v === undefined || v.trim() === '' ? null : Number(v));
+  const lat0 = num(wb.LAT_DEGREES); const lon0 = num(wb.LONG_DEGREES);
+  if (lat0 === null || lon0 === null || !Number.isFinite(lat0) || !Number.isFinite(lon0) || lat0 === 0 || lon0 === 0) return null;
+  const dms = [wb.LAT_MINUTES, wb.LAT_SECONDS, wb.LONG_MINUTES, wb.LONG_SECONDS].some((v) => v !== undefined && v.trim() !== '');
+  const datum = ({ '1': 'NAD27', '2': 'NAD83', '3': 'WGS84' } as Record<string, string>)[wb.LATLONG_TYPE_CODE] ?? 'UNKNOWN';
+  if (!dms) return { lon: lon0, lat: lat0, style: 'decimal', datum };
+  const parts = [wb.LAT_MINUTES, wb.LAT_SECONDS, wb.LONG_MINUTES, wb.LONG_SECONDS].map((v) => num(v) ?? 0);
+  if (parts.some((x) => !Number.isFinite(x) || x < 0 || x >= 60)) return null; // malformed minutes/seconds: never guess
+  const lat = lat0 + parts[0] / 60 + parts[1] / 3600;
+  const lon = (lon0 < 0 ? -1 : 1) * (Math.abs(lon0) + parts[2] / 60 + parts[3] / 3600);
+  return { lon, lat, style: 'dms', datum };
+}
 
 export function parseRrcDsv(text: string): { header: string[]; rows: Array<Record<string, string>>; rejects: string[] } {
   const lines = text.split(/\r?\n/);
@@ -77,18 +98,17 @@ export function pullPending(runs: PendingRunInput[], now: string): ConnectorResu
       const recs: BaseRecord[] = [];
       if (!wbs.length) { noWellbore++; recs.push({ ...base, ...common, source_record_id: `${doc}:0`, county: null, geom: null, flags: ['NO_WELLBORE'], raw: { permit: pr, file: run.permitFile } } as BaseRecord); }
       else wbs.forEach((wb, i) => {
-        const decimal = wb.LATLONG_TYPE_CODE === '1'; const lat = Number(wb.LAT_DEGREES); const lon = Number(wb.LONG_DEGREES);
-        const usable = decimal && Number.isFinite(lat) && Number.isFinite(lon) && lat !== 0 && lon !== 0; // no sign flip, no guess: the bbox gate judges the values as given
-        if (!usable) nonDecimal++;
+        const c = wellboreCoord(wb); // no sign flip, no guess: the bbox gate judges the values as given
+        if (!c) nonDecimal++;
         const known = PENDING_COUNTY[wb.COUNTY_CODE]; if (!known) unverifiedCounty++;
         recs.push({ ...base, ...common, source_record_id: `${doc}:${i}`, county: known ?? `UNVERIFIED code ${wb.COUNTY_CODE}`, county_code: wb.COUNTY_CODE, nearest_town: wb.NEAREST_TOWN || null,
-          geom: usable ? { type: 'Point', coordinates: [lon, lat] } : null, raw: { permit: pr, wellbore: wb, files: [run.permitFile, run.wellboreFile] } } as BaseRecord);
+          geom: c ? { type: 'Point', coordinates: [c.lon, c.lat] } : null, datum: c?.datum ?? null, coord_style: c?.style ?? (wb.STATE_PLANE_X ? 'state_plane (not converted)' : null), raw: { permit: pr, wellbore: wb, files: [run.permitFile, run.wellboreFile] } } as BaseRecord);
       });
       if (byDoc.has(doc)) dupDocs++; byDoc.set(doc, recs); // a document seen again in a later run replaces the earlier one (never observed in 250 real runs)
     }
   }
   const records = [...byDoc.values()].flat(); const ts = runs.map((r) => r.ts).sort();
-  notes.push(`pending-permit feed (INCREMENTAL: each run lists only newly submitted permits): ${runs.length} runs (${runs.length ? `${iso(ts[0])} .. ${iso(ts[ts.length - 1])}` : 'none'}, timezone UNVERIFIED), ${emptyRuns} with no permits; ${permitRows} permit rows, ${wellboreRows} wellbore rows -> ${records.length} records over ${byDoc.size} permits; ${noWellbore} permits with no wellbore row (flagged NO_WELLBORE); ${nonDecimal} wellbores without usable decimal coordinates (geometry NULL); ${unverifiedCounty} wellbores outside the configured counties (county written as UNVERIFIED code); ${dupDocs} documents repeated across runs; header widths seen: ${[...widths].join(',')}`);
+  notes.push(`pending-permit feed (INCREMENTAL: each run lists only newly submitted permits): ${runs.length} runs (${runs.length ? `${iso(ts[0])} .. ${iso(ts[ts.length - 1])}` : 'none'}, timezone UNVERIFIED), ${emptyRuns} with no permits; ${permitRows} permit rows, ${wellboreRows} wellbore rows -> ${records.length} records over ${byDoc.size} permits; ${noWellbore} permits with no wellbore row (flagged NO_WELLBORE); ${nonDecimal} wellbores without usable lat/long (state-plane or empty; geometry NULL); ${unverifiedCounty} wellbores outside the configured counties (county written as UNVERIFIED code); ${dupDocs} documents repeated across runs; header widths seen: ${[...widths].join(',')}`);
   if (rejects.length) notes.push(`${rejects.length} rows had a value count different from the header and were NOT loaded: ${rejects.slice(0, 3).join(' | ')}`);
   const layer: LayerPull = { layer: 'permit_pending', url: PENDING_SHARE_URL, entity_type: 'permit', skipped_unchanged: false, source_updated_at: runs.length ? iso(ts[ts.length - 1]) : null, records, unmapped: [], fields_discovered: [] };
   return { source: 'RRC', state: rejects.length || !runs.length ? 'UNVERIFIED' : 'OK', layers: [layer], notes };

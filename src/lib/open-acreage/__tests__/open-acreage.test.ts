@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { answer, parseIntent } from '../voice.ts';
 import { buildDigest } from '../digest.ts';
-import { listPendingRuns, parseRrcDsv, pullPending } from '../pending.ts';
+import { listPendingRuns, parseRrcDsv, pullPending, wellboreCoord } from '../pending.ts';
 import { parseDate } from '../normalize.ts';
 import { disambiguateIds } from '../connectors.ts';
 import { api8, combineRRC, parseZipMemberDate, pullPdq } from '../pdq.ts';
@@ -407,14 +407,14 @@ test('pending permits: wrapped header, quotes, join, decimal-only coordinates, N
 
   const permitTxt = ['UNIVERSAL_DOC_NO}STATUS_NUMBER}OPERATOR_NAME}OPERATOR_NUMBER}DISTRICT}DEFAULT_LEASE_NAME}SUBMIT_DATE',
     '"1001"}"1"}"ACME OIL"}"000111"}"08"}"SMITH"}"11/03/2026"', '"1002"}"1"}"BETA"}"000222"}"8A"}"JONES"}"11/04/2026"', '"1003"}"1"}"GAMMA"}"000333"}"08"}"LEE"}"11/04/2026"'].join('\n');
-  const wbTxt = ['UNIVERSAL_DOC_NO}COUNTY_CODE}NEAREST_TOWN}LAT_DEGREES}LONG_DEGREES}LATLONG_TYPE_CODE',
-    '"1001"}"003"}"ANDREWS"}"31.05"}"-103.95"}"1"', '"1002"}"227"}"SOMEWHERE"}"32.1"}"-101.2"}"2"', '"1001"}"003"}"ANDREWS"}"31.06"}"-103.96"}"1"', 'broken}line'].join('\n');
+  const wbTxt = ['UNIVERSAL_DOC_NO}COUNTY_CODE}NEAREST_TOWN}LAT_DEGREES}LAT_MINUTES}LAT_SECONDS}LONG_DEGREES}LONG_MINUTES}LONG_SECONDS}LATLONG_TYPE_CODE',
+    '"1001"}"003"}"ANDREWS"}"31.05"}""}""}"-103.95"}""}""}"1"', '"1002"}"227"}"SOMEWHERE"}""}""}""}""}""}""}"1"', '"1001"}"003"}"ANDREWS"}"31.06"}""}""}"-103.96"}""}""}"2"', 'broken}line'].join('\n');
   const r = pullPending([{ permitText: permitTxt, wellboreText: wbTxt, ts: '20261105110800', permitFile: 'p.txt', wellboreFile: 'w.txt' }], NOW);
   const recs = r.layers[0].records as BaseRecord[];
   assert.equal(recs.length, 4, 'doc 1001 has two wellbores, 1002 one, 1003 none');
   assert.deepEqual(recs.map((x) => x.source_record_id), ['1001:0', '1001:1', '1002:0', '1003:0']);
   assert.deepEqual(recs[0].geom, { type: 'Point', coordinates: [-103.95, 31.05] }); assert.equal(recs[0].county, 'ANDREWS'); assert.equal(recs[0].permit_status, 'SUBMITTED');
-  assert.equal(recs[2].geom, null, 'non-decimal coordinate type stays NULL'); assert.equal(recs[2].county, 'UNVERIFIED code 227');
+  assert.equal(recs[2].geom, null, 'no lat/long (e.g. state plane) stays NULL'); assert.equal(recs[1].datum, 'NAD83'); assert.equal(recs[0].datum, 'NAD27'); assert.equal(recs[2].county, 'UNVERIFIED code 227');
   assert.deepEqual(recs[3].flags, ['NO_WELLBORE']); assert.equal(recs[3].geom, null);
   assert.equal(recs[0].issued_date, null); assert.equal(recs[0].submit_date, '2026-11-03');
   assert.equal(r.state, 'UNVERIFIED', 'a mismatched row means not OK'); assert.match(r.notes.join('\n'), /1 rows had a value count different/);
@@ -425,7 +425,7 @@ test('pending permits: wrapped header, quotes, join, decimal-only coordinates, N
 
 test('pending feed is incremental: runs accumulate, a repeated document is replaced, and the window decides the hold', () => {
   const permit = (docs: string[]) => ['UNIVERSAL_DOC_NO}STATUS_NUMBER}OPERATOR_NAME}OPERATOR_NUMBER}SUBMIT_DATE', ...docs.map((d) => `"${d}"}"1"}"OP"}"1"}"03-NOV-26 01.00.00.000000 PM"}`)].join('\n');
-  const wb = (docs: string[]) => ['UNIVERSAL_DOC_NO}COUNTY_CODE}LAT_DEGREES}LONG_DEGREES}LATLONG_TYPE_CODE', ...docs.map((d) => `"${d}"}"003"}"31.05"}"-103.95"}"1"}`)].join('\n');
+  const wb = (docs: string[]) => ['UNIVERSAL_DOC_NO}COUNTY_CODE}LAT_DEGREES}LAT_MINUTES}LAT_SECONDS}LONG_DEGREES}LONG_MINUTES}LONG_SECONDS}LATLONG_TYPE_CODE', ...docs.map((d) => `"${d}"}"003"}"31.05"}""}""}"-103.95"}""}""}"1"}`)].join('\n');
   const run = (ts: string, docs: string[]) => ({ ts, permitFile: `p${ts}`, wellboreFile: `w${ts}`, permitText: permit(docs), wellboreText: wb(docs) });
   const r = pullPending([run('20261104110800', ['1', '2']), run('20261104170800', []), run('20261105110800', ['3', '2'])], NOW);
   assert.equal(r.layers[0].records.length, 3, 'docs 1,2,3 accumulate; doc 2 repeated across runs counts once');
@@ -449,4 +449,16 @@ test('pending permits: real RRC format (47-column header, trailing delimiter, Or
   assert.equal(p.rows[0].UNIVERSAL_DOC_NO, '493747045'); assert.equal(p.rows[0].OPERATOR_NAME, 'BPX OPERATING COMPANY'); assert.equal(p.rows[0].DEFAULT_LEASE_NAME, 'CKODRE A'); assert.equal(p.rows[0].DISTRICT, '02');
   const empty = parseRrcDsv(header); assert.equal(empty.rows.length, 0); assert.equal(empty.header.length, 47);
   assert.equal(parseDate('03-SEP-20 12.26.41.382000 PM'), '2020-09-03'); assert.equal(parseDate('06-FEB-21'), '2021-02-06'); assert.equal(parseDate('01-JAN-99'), '1999-01-01'); assert.equal(parseDate('99-XXX-20'), null);
+});
+
+test('wellbore coordinates: decimal, degrees-minutes-seconds and state plane (real 2026-11-06 rows); LATLONG_TYPE_CODE is the datum', () => {
+  const near = (a: number, b: number) => Math.abs(a - b) < 1e-5;
+  const dec = wellboreCoord({ LATLONG_TYPE_CODE: '1', LAT_DEGREES: '31.128878', LAT_MINUTES: '', LAT_SECONDS: '', LONG_DEGREES: '-103.20394', LONG_MINUTES: '', LONG_SECONDS: '' })!;
+  assert.ok(near(dec.lat, 31.128878) && near(dec.lon, -103.20394)); assert.equal(dec.style, 'decimal'); assert.equal(dec.datum, 'NAD27');
+  const dms = wellboreCoord({ LATLONG_TYPE_CODE: '1', LAT_DEGREES: '31', LAT_MINUTES: '36', LAT_SECONDS: '18.18', LONG_DEGREES: '-103', LONG_MINUTES: '4', LONG_SECONDS: '36.16' })!;
+  assert.ok(near(dms.lat, 31 + 36 / 60 + 18.18 / 3600) && near(dms.lon, -(103 + 4 / 60 + 36.16 / 3600))); assert.equal(dms.style, 'dms');
+  assert.ok(dms.lon < -103.07 && dms.lon > -103.08, 'minutes/seconds are NOT dropped (the whole-degree bug put this at -103)');
+  assert.equal(wellboreCoord({ LATLONG_TYPE_CODE: '1', LAT_DEGREES: '', LONG_DEGREES: '', LAT_MINUTES: '', LAT_SECONDS: '', LONG_MINUTES: '', LONG_SECONDS: '' }), null, 'state plane only');
+  assert.equal(wellboreCoord({ LATLONG_TYPE_CODE: '3', LAT_DEGREES: '31', LAT_MINUTES: '75', LAT_SECONDS: '0', LONG_DEGREES: '-103', LONG_MINUTES: '0', LONG_SECONDS: '0' }), null, 'malformed minutes are rejected, not guessed');
+  assert.equal(wellboreCoord({ LATLONG_TYPE_CODE: '9', LAT_DEGREES: '31.1', LONG_DEGREES: '-103.1', LAT_MINUTES: '', LAT_SECONDS: '', LONG_MINUTES: '', LONG_SECONDS: '' })!.datum, 'UNKNOWN');
 });
