@@ -80,6 +80,14 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
     if (linkedApis.has(a)) return true;
     const st = statusesByApi.get(a); return !!st && st.size > 0 && [...st].every((x) => okStatus.has(x));
   };
+  // University Lands permits in the window that cannot be placed by block+section (blank block or section, no coordinates): they may sit on a tract we cannot see.
+  const activityOf = (p: PermitRecord) => (typeof p.activity_date === 'string' ? p.activity_date : p.issued_date);
+  const unplacedCounties = new Set<string>();
+  for (const p of inp.permits) {
+    const d = activityOf(p); if (!d || d < permitCut || p.geom) continue;
+    for (const l of (p.locations as Array<{ county: string | null; section: string; block: string; survey: string }> | undefined) ?? [])
+      if (isUlSurvey(l.survey) && (num(l.block) === '' || num(l.section) === '')) unplacedCounties.add(norm(l.county ?? p.county));
+  }
   const out: Candidate[] = [];
 
   for (const sec of inp.sections) {
@@ -110,6 +118,7 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
       if (near.length) { reasons.push('OFFSET_PRODUCTION'); near.forEach(ref); }
     }
     if (inp.permits.some((p) => !p.geom && !((p.locations as unknown[] | undefined)?.length) && norm(p.county) === norm(sec.county))) reasons.push('PERMITS_WITHOUT_GEOMETRY');
+    if (unplacedCounties.has(norm(sec.county))) reasons.push('UL_PERMIT_UNPLACED_IN_COUNTY'); // informational: a UL permit here could not be placed on any section
     reasons.push('GLO_NOT_CONNECTED'); // coverage gap, informational — status unchanged
     // A permit SUBMITTED inside the window (RRC pending feed; approval is not visible there) means drilling is intended: visible HOLD, not a clean candidate.
     const pending = inp.permits.filter((p) => p.permit_status === 'SUBMITTED' && typeof p.submit_date === 'string' && p.submit_date >= permitCut && permitHits(p, sec, cfg).spatial);

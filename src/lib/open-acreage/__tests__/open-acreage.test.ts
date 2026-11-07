@@ -534,3 +534,12 @@ test('text matching works on sections that only have raw attributes (loaded befo
   const noNumbers = { ...old, raw: {} } as Section;
   assert.equal(buildCandidates(inputs({ sections: [noNumbers], permits: [permit] }), cfg(), NOW).length, 1, 'a section with no block/section can never be text-matched (blank never equals blank)');
 });
+
+test('a University Lands permit with a blank block or section is flagged on candidates in its county', () => {
+  const mk = (block: string, section: string, county = 'REEVES') => ({ entity_type: 'permit', source_name: 'RRC', source_url: 'u', source_layer: 'permit', source_record_id: 'p', source_updated_at: null, retrieved_at: NOW, raw: {},
+    geom: null, permit_status: 'APPROVED', issued_date: '2026-09-01', county, locations: [{ kind: 'surface', county: null, section, block, survey: 'UL', abstract: '' }] }) as BaseRecord;
+  const flagged = (permits: BaseRecord[]) => buildCandidates(inputs({ permits }), cfg(), NOW)[0].reason_codes.includes('UL_PERMIT_UNPLACED_IN_COUNTY');
+  assert.equal(flagged([mk('', '34')]), true); assert.equal(flagged([mk('8', '')]), true);
+  assert.equal(flagged([mk('8', '34')]), false, 'complete location: it is placed (or matches a different section)');
+  assert.equal(flagged([mk('', '34', 'LOVING')]), false, 'different county');
+});
