@@ -102,6 +102,15 @@ async function main() {
       const hitCounts = { spatial: 0, text: 0, either: 0 }; for (const s of tsecs) { let sp = false, tx = false; for (const p of active) { const h = permitHits(p, s, cfg); sp ||= h.spatial; tx ||= h.text; if (sp && tx) break; } if (sp) hitCounts.spatial++; if (tx) hitCounts.text++; if (sp || tx) hitCounts.either++; }
       console.log(`target-county UL sections: ${tsecs.length}; with an active permit by coordinates ${hitCounts.spatial}, by text ${hitCounts.text}, either ${hitCounts.either}`);
     }
+    else if (j === 'candidate_summary') {
+      // Read-only: how many tracts would become CANDIDATE once the stale-source hold lifts, and why the rest are held.
+      const cs = await store.getCandidates(); const reasons: Record<string, number> = {}; const byCounty: Record<string, { total: number; clean: number }> = {};
+      for (const c of cs) { const held = c.reason_codes.some((x) => x.startsWith('HOLD:')); const k = String(c.county); byCounty[k] ??= { total: 0, clean: 0 }; byCounty[k].total++; if (!held) byCounty[k].clean++; for (const x of c.reason_codes) reasons[x] = (reasons[x] ?? 0) + 1; }
+      const clean = Object.values(byCounty).reduce((a, b) => a + b.clean, 0);
+      console.log(`${cs.length} tracts evaluated; ${clean} have no hold other than the stale source; ${cs.length - clean} are held for another reason (HOLD:* codes below).`);
+      console.log('by county (total / no other hold):', Object.fromEntries(Object.entries(byCounty).map(([k, v]) => [k, `${v.total} / ${v.clean}`])));
+      console.log('reason counts:', Object.fromEntries(Object.entries(reasons).sort((a, b) => b[1] - a[1])));
+    }
     else if (j === 'candidates_csv') {
       // Read-only export of the current candidate list for review. These are leads, never "open": each needs a courthouse title check.
       const secs = new Map((await store.getAll('section_grid')).map((s) => [`${s.source_name}:${s.source_record_id}`, s]));
