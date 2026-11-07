@@ -34,11 +34,19 @@ export function parseDate(value: unknown): string | null {
     d = new Date(value); // ArcGIS epoch ms
   } else {
     const s = String(value).trim();
-    const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
-    if (us) d = new Date(Date.UTC(+us[3], +us[1] - 1, +us[2]));
-    else if (/^\d{4}-\d{2}-\d{2}/.test(s)) d = new Date(s.length === 10 ? `${s}T00:00:00Z` : s);
-    else if (/^\d{8}$/.test(s)) d = new Date(Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)));
-    else return null;
+    // Oracle style, e.g. "03-SEP-20 12.26.41.382000 PM" (RRC pending permits): two-digit years are 2000-2069 -> 20xx, 70-99 -> 19xx.
+    const ora = /^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})(?:\s|$)/.exec(s);
+    const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    if (ora && MON.includes(ora[2].toUpperCase())) {
+      const yy = Number(ora[3]); const year = ora[3].length === 4 ? yy : yy < 70 ? 2000 + yy : 1900 + yy;
+      d = new Date(Date.UTC(year, MON.indexOf(ora[2].toUpperCase()), Number(ora[1])));
+    } else {
+      const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+      if (us) d = new Date(Date.UTC(+us[3], +us[1] - 1, +us[2]));
+      else if (/^\d{4}-\d{2}-\d{2}/.test(s)) d = new Date(s.length === 10 ? `${s}T00:00:00Z` : s);
+      else if (/^\d{8}$/.test(s)) d = new Date(Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)));
+      else return null;
+    }
   }
   if (!d || Number.isNaN(d.getTime())) return null;
   const y = d.getUTCFullYear();

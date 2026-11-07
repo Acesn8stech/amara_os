@@ -16,7 +16,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { answer, parseIntent } from '../voice.ts';
 import { buildDigest } from '../digest.ts';
-import { parseRrcDsv, pickLatestPending, pullPending } from '../pending.ts';
+import { listPendingRuns, parseRrcDsv, pullPending } from '../pending.ts';
+import { parseDate } from '../normalize.ts';
 import { disambiguateIds } from '../connectors.ts';
 import { api8, combineRRC, parseZipMemberDate, pullPdq } from '../pdq.ts';
 import type { BaseRecord, Geometry, LeaseRecord, Section, SyncRun } from '../types.ts';
@@ -408,25 +409,44 @@ test('pending permits: wrapped header, quotes, join, decimal-only coordinates, N
     '"1001"}"1"}"ACME OIL"}"000111"}"08"}"SMITH"}"11/03/2026"', '"1002"}"1"}"BETA"}"000222"}"8A"}"JONES"}"11/04/2026"', '"1003"}"1"}"GAMMA"}"000333"}"08"}"LEE"}"11/04/2026"'].join('\n');
   const wbTxt = ['UNIVERSAL_DOC_NO}COUNTY_CODE}NEAREST_TOWN}LAT_DEGREES}LONG_DEGREES}LATLONG_TYPE_CODE',
     '"1001"}"003"}"ANDREWS"}"31.05"}"-103.95"}"1"', '"1002"}"227"}"SOMEWHERE"}"32.1"}"-101.2"}"2"', '"1001"}"003"}"ANDREWS"}"31.06"}"-103.96"}"1"', 'broken}line'].join('\n');
-  const r = pullPending({ permitText: permitTxt, wellboreText: wbTxt, ts: '20261105110800', permitFile: 'p.txt', wellboreFile: 'w.txt' }, NOW);
+  const r = pullPending([{ permitText: permitTxt, wellboreText: wbTxt, ts: '20261105110800', permitFile: 'p.txt', wellboreFile: 'w.txt' }], NOW);
   const recs = r.layers[0].records as BaseRecord[];
   assert.equal(recs.length, 4, 'doc 1001 has two wellbores, 1002 one, 1003 none');
   assert.deepEqual(recs.map((x) => x.source_record_id), ['1001:0', '1001:1', '1002:0', '1003:0']);
-  assert.deepEqual(recs[0].geom, { type: 'Point', coordinates: [-103.95, 31.05] }); assert.equal(recs[0].county, 'ANDREWS'); assert.equal(recs[0].permit_status, 'PENDING');
+  assert.deepEqual(recs[0].geom, { type: 'Point', coordinates: [-103.95, 31.05] }); assert.equal(recs[0].county, 'ANDREWS'); assert.equal(recs[0].permit_status, 'SUBMITTED');
   assert.equal(recs[2].geom, null, 'non-decimal coordinate type stays NULL'); assert.equal(recs[2].county, 'UNVERIFIED code 227');
   assert.deepEqual(recs[3].flags, ['NO_WELLBORE']); assert.equal(recs[3].geom, null);
   assert.equal(recs[0].issued_date, null); assert.equal(recs[0].submit_date, '2026-11-03');
   assert.equal(r.state, 'UNVERIFIED', 'a mismatched row means not OK'); assert.match(r.notes.join('\n'), /1 rows had a value count different/);
-  assert.throws(() => pullPending({ permitText: permitTxt.replace('OPERATOR_NUMBER}', 'OP_NO}'), wellboreText: wbTxt, ts: '20261105110800', permitFile: 'p', wellboreFile: 'w' }, NOW), /missing required columns/);
-  assert.deepEqual(pickLatestPending(['dp_drilling_permit_pending_20261105110800.txt', 'dp_wellbore_pending_20261105110800.txt', 'dp_drilling_permit_pending_20261105170800.txt', 'dp_latlongs_pending_20261105111500.txt']),
-    { ts: '20261105110800', permitFile: 'dp_drilling_permit_pending_20261105110800.txt', wellboreFile: 'dp_wellbore_pending_20261105110800.txt' });
+  assert.throws(() => pullPending([{ permitText: permitTxt.replace('OPERATOR_NUMBER}', 'OP_NO}'), wellboreText: wbTxt, ts: '20261105110800', permitFile: 'p', wellboreFile: 'w' }], NOW), /missing required columns/);
+  assert.deepEqual(listPendingRuns(['dp_drilling_permit_pending_20261105170800.txt', 'dp_wellbore_pending_20261105110800.txt', 'dp_drilling_permit_pending_20261105110800.txt', 'dp_latlongs_pending_20261105111500.txt', 'junk.txt']),
+    [{ ts: '20261105110800', permitFile: 'dp_drilling_permit_pending_20261105110800.txt', wellboreFile: 'dp_wellbore_pending_20261105110800.txt' }, { ts: '20261105170800', permitFile: 'dp_drilling_permit_pending_20261105170800.txt', wellboreFile: null }]);
 });
 
-test('candidates: a pending permit inside a tract holds it (PERMIT_PENDING) but does not count as an issued permit', () => {
-  const pend = { entity_type: 'permit', source_name: 'RRC', source_url: 'u', source_layer: 'permit_pending', source_record_id: '1:0', source_updated_at: null, retrieved_at: NOW, raw: {},
-    geom: { type: 'Point', coordinates: [-103.95, 31.05] }, permit_status: 'PENDING', issued_date: null, county: 'Reeves' } as BaseRecord;
-  const c = buildCandidates(inputs({ permits: [pend] }), cfg(), NOW)[0];
-  assert.equal(c.status, 'HOLD'); assert.ok(c.reason_codes.includes('PERMIT_PENDING')); assert.ok(c.reason_codes.includes('HOLD:PERMIT_PENDING'));
-  const away = buildCandidates(inputs({ permits: [{ ...pend, geom: { type: 'Point', coordinates: [-100, 30] } } as BaseRecord] }), cfg(), NOW)[0];
-  assert.equal(away.status, CANDIDATE_STATUS);
+test('pending feed is incremental: runs accumulate, a repeated document is replaced, and the window decides the hold', () => {
+  const permit = (docs: string[]) => ['UNIVERSAL_DOC_NO}STATUS_NUMBER}OPERATOR_NAME}OPERATOR_NUMBER}SUBMIT_DATE', ...docs.map((d) => `"${d}"}"1"}"OP"}"1"}"03-NOV-26 01.00.00.000000 PM"}`)].join('\n');
+  const wb = (docs: string[]) => ['UNIVERSAL_DOC_NO}COUNTY_CODE}LAT_DEGREES}LONG_DEGREES}LATLONG_TYPE_CODE', ...docs.map((d) => `"${d}"}"003"}"31.05"}"-103.95"}"1"}`)].join('\n');
+  const run = (ts: string, docs: string[]) => ({ ts, permitFile: `p${ts}`, wellboreFile: `w${ts}`, permitText: permit(docs), wellboreText: wb(docs) });
+  const r = pullPending([run('20261104110800', ['1', '2']), run('20261104170800', []), run('20261105110800', ['3', '2'])], NOW);
+  assert.equal(r.layers[0].records.length, 3, 'docs 1,2,3 accumulate; doc 2 repeated across runs counts once');
+  assert.match(r.notes.join(), /3 runs/); assert.match(r.notes.join(), /1 with no permits/); assert.match(r.notes.join(), /1 documents repeated/);
+  assert.equal(r.layers[0].records.find((x) => x.source_record_id === '2:0')!.source_updated_at, '2026-11-05T11:08:00');
+
+  const sub = (date: string) => ({ entity_type: 'permit', source_name: 'RRC', source_url: 'u', source_layer: 'permit_pending', source_record_id: '1:0', source_updated_at: null, retrieved_at: NOW, raw: {},
+    geom: { type: 'Point', coordinates: [-103.95, 31.05] }, permit_status: 'SUBMITTED', issued_date: null, submit_date: date, county: 'Reeves' }) as BaseRecord;
+  const c = buildCandidates(inputs({ permits: [sub('2026-10-01')] }), cfg(), NOW)[0];
+  assert.equal(c.status, 'HOLD'); assert.ok(c.reason_codes.includes('PERMIT_SUBMITTED_RECENT')); assert.ok(c.reason_codes.includes('HOLD:PERMIT_SUBMITTED'));
+  assert.equal(buildCandidates(inputs({ permits: [sub('2020-01-01')] }), cfg(), NOW)[0].status, CANDIDATE_STATUS, 'submitted long before the window');
+  assert.equal(buildCandidates(inputs({ permits: [{ ...sub('2026-10-01'), geom: { type: 'Point', coordinates: [-100, 30] } } as BaseRecord] }), cfg(), NOW)[0].status, CANDIDATE_STATUS, 'elsewhere');
+});
+
+test('pending permits: real RRC format (47-column header, trailing delimiter, Oracle dates, header-only empty runs)', () => {
+  const header = 'SWR38_ABBR_NOTICE}IS_REAPPLIED}UNIVERSAL_DOC_NO}STATUS_NUMBER}EFFECTIVE_DT}RETURN_DT}TOTAL_DEPTH}IS_AMENDMENT}SWR_36_FLAG}DEVELOP_MINERALS_FLAG}CASE_DOCKET_NO}FINAL_PROTEST_DT}STATUS_SEQ_NO}SPUD_DT}EXPEDITE_FLAG}EXPEDITE_DATE_TIME}FILING_PURPOSE_CODE}SURFACE_CASING_DT}DEFAULT_LEASE_NAME}DEFAULT_WELL_NUMBER}DEFAULT_VERTICAL}DEFAULT_HORIZANTAL}DEFAULT_SIDETRACK}LOCKED_BY}DEFAULT_DIRECTIONAL}STATUS_CODE}EXPIRATION_DATE}WALKIN_CONTACT_NAME}WALKIN_CONTACT_PHONE}COMPLETION_CODE}SWR_SUBSECT_CODE}STAT_DT}CURRENT_STATE_CODE}BRIDGE_FLAG}SWR_LIST}BRIDGE_PRINT_FLAG}HAS_DISCREPANCY}SUBMIT_DATE}CREATE_DATE}UNIQUE_ADDRESS_NUMBER}DKT_SUFFIX_CODE}DKT_EXAMINER_CODE}REAPPLIED_STATUS_NO}OPERATOR_NAME}OPERATOR_NUMBER}OPERATOR_PHONE}DISTRICT';
+  const row = '""} ""} "493747045"} "864960"} ""} ""} "14000"} "N"} "N"} "Y"} ""} ""} "99"} ""} "Y"} ""} "01"} ""} "CKODRE A"} "   6H "} "N"} "Y"} "N"}""} "N"} "P"} ""} ""} ""} ""} ""} ""} "MAP"} ""} "36,37"} ""} "N"} "03-SEP-20 12.26.41.382000 PM"} "02-SEP-20 02.00.16.926000 PM"} ""} ""} ""} ""}"BPX OPERATING COMPANY"}"085408"}"7204395104"}"02"}';
+  assert.equal(header.split('}').length, 47);
+  const p = parseRrcDsv(`${header}\n${row}\n${row.replace('493747045', '493743020')}\n`);
+  assert.equal(p.rows.length, 2); assert.equal(p.rejects.length, 0);
+  assert.equal(p.rows[0].UNIVERSAL_DOC_NO, '493747045'); assert.equal(p.rows[0].OPERATOR_NAME, 'BPX OPERATING COMPANY'); assert.equal(p.rows[0].DEFAULT_LEASE_NAME, 'CKODRE A'); assert.equal(p.rows[0].DISTRICT, '02');
+  const empty = parseRrcDsv(header); assert.equal(empty.rows.length, 0); assert.equal(empty.header.length, 47);
+  assert.equal(parseDate('03-SEP-20 12.26.41.382000 PM'), '2020-09-03'); assert.equal(parseDate('06-FEB-21'), '2021-02-06'); assert.equal(parseDate('01-JAN-99'), '1999-01-01'); assert.equal(parseDate('99-XXX-20'), null);
 });

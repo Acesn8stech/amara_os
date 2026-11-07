@@ -11,7 +11,7 @@ import { FileStore, type Store } from '../../src/lib/open-acreage/store.ts';
 import { storeFromEnv } from '../../src/lib/open-acreage/supabase-store.ts';
 import { fetchDistinct, fetchLayerInfo } from '../../src/lib/open-acreage/arcgis.ts';
 import { PDQ_LEASE_CYCLE, PDQ_WELL_COMPLETION, api8, combineRRC, pdqLeaseApiMap, pullPdq, unzipLines, zipMemberDate } from '../../src/lib/open-acreage/pdq.ts';
-import { pickLatestPending, pullPending } from '../../src/lib/open-acreage/pending.ts';
+import { listPendingRuns, pullPending } from '../../src/lib/open-acreage/pending.ts';
 import { buildDigest, pushSlack } from '../../src/lib/open-acreage/digest.ts';
 
 const [job = 'all', ...flags] = process.argv.slice(2);
@@ -49,11 +49,11 @@ async function main() {
         // Permits / EBCDIC production: fixed-width decode (layouts must be verified, else the decoder refuses).
         const files = rrcFiles();
         if (files.length) parts.push(decodeRRC(files, { now }, undefined, files.map((f) => f.kind)));
-        // Pending drilling permits: newest run in OA_RRC_DIR/pending that has both dp_drilling_permit_* and dp_wellbore_* files.
+        // Pending-permit feed: EVERY run in OA_RRC_DIR/pending (the feed is incremental: each run lists only newly submitted permits).
         const pdir = dir ? join(dir, 'pending') : '';
         if (pdir && existsSync(pdir)) {
-          const latest = pickLatestPending(readdirSync(pdir));
-          if (latest) parts.push(pullPending({ permitText: readFileSync(join(pdir, latest.permitFile), 'utf8'), wellboreText: readFileSync(join(pdir, latest.wellboreFile), 'utf8'), ...latest }, now));
+          const runs = listPendingRuns(readdirSync(pdir));
+          if (runs.length) parts.push(pullPending(runs.map((x) => ({ ...x, permitText: readFileSync(join(pdir, x.permitFile), 'utf8'), wellboreText: x.wellboreFile ? readFileSync(join(pdir, x.wellboreFile), 'utf8') : null })), now));
         }
         // Production Data Query Dump: PDQ_DSV.zip, read by column name; attributed to our wells by 8-digit API.
         const zip = dir ? join(dir, 'PDQ_DSV.zip') : '';
