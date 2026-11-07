@@ -40,6 +40,18 @@ export function assertStatus(s: string): CandidateStatus {
   return s as CandidateStatus;
 }
 
+export const normCounty = norm;
+export const normNum = num;
+export const ulSurvey = isUlSurvey;
+
+/** Does a permit touch this section? spatial: its coordinate is inside or within the NAD27 buffer; text: a University Lands survey with the section's county, block and section. */
+export function permitHits(p: PermitRecord, sec: Section, cfg: Pick<OpenAcreageConfig, 'permitBufferMiles'>): { spatial: boolean; text: boolean } {
+  const spatial = !!p.geom && !!sec.geom && pointNearGeometry([p.geom.coordinates[0] as number, p.geom.coordinates[1] as number], sec.geom, cfg.permitBufferMiles);
+  const locs = (p.locations as Array<{ county: string | null; section: string; block: string; survey: string }> | undefined) ?? [];
+  const text = num(sec.block_no) !== '' && locs.some((l) => isUlSurvey(l.survey) && norm(l.county ?? p.county) === norm(sec.county) && num(l.block) === num(sec.block_no) && num(l.section) === num(sec.section_no));
+  return { spatial, text };
+}
+
 export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, nowIso: string): Candidate[] {
   const targets = new Set(cfg.targetCounties.map(norm));
   if (!targets.size) return []; // Scott sets the list; no list => no candidates (no guessing)
@@ -71,12 +83,9 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
     const g = sec.geom;
     const hits = inp.leases.filter((l) => l.geom && intersects(g, l.geom));
     if (hits.some((l) => l.status_normalized === 'ACTIVE')) continue; // (1)
-    const near = (p: PermitRecord) => !!p.geom && pointNearGeometry([p.geom.coordinates[0] as number, p.geom.coordinates[1] as number], g, cfg.permitBufferMiles);
-    // Permits without coordinates still carry location text (county, block, section, survey): match University Lands surveys to the UL section's block and section.
-    const textHit = (p: PermitRecord) => ((p.locations as Array<{ county: string | null; section: string; block: string; survey: string }> | undefined) ?? []).some((l) =>
-      isUlSurvey(l.survey) && norm(l.county ?? p.county) === norm(sec.county) && num(l.block) === num(sec.block_no) && num(l.section) === num(sec.section_no) && num(sec.block_no) !== '');
+    const hit = (p: PermitRecord) => { const h = permitHits(p, sec, cfg); return h.spatial || h.text; };
     const activity = (p: PermitRecord) => (typeof p.activity_date === 'string' ? p.activity_date : p.issued_date); // latest of issued / amended / extended / spud
-    const recentPermits = inp.permits.filter((p) => { const d = activity(p); return !!d && d >= permitCut && (near(p) || textHit(p)); });
+    const recentPermits = inp.permits.filter((p) => { const d = activity(p); return !!d && d >= permitCut && hit(p); });
     if (recentPermits.length) continue; // (2)
     const inside = inp.wells.filter((w) => w.geom && intersects(g, w.geom));
     if (inside.some(wellProducing)) continue; // (3)
@@ -99,7 +108,7 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
     if (inp.permits.some((p) => !p.geom && !((p.locations as unknown[] | undefined)?.length) && norm(p.county) === norm(sec.county))) reasons.push('PERMITS_WITHOUT_GEOMETRY');
     reasons.push('GLO_NOT_CONNECTED'); // coverage gap, informational — status unchanged
     // A permit SUBMITTED inside the window (RRC pending feed; approval is not visible there) means drilling is intended: visible HOLD, not a clean candidate.
-    const pending = inp.permits.filter((p) => p.permit_status === 'SUBMITTED' && typeof p.submit_date === 'string' && p.submit_date >= permitCut && near(p));
+    const pending = inp.permits.filter((p) => p.permit_status === 'SUBMITTED' && typeof p.submit_date === 'string' && p.submit_date >= permitCut && permitHits(p, sec, cfg).spatial);
     if (pending.length) { reasons.push('PERMIT_SUBMITTED_RECENT'); pending.forEach(ref); }
     const unverifiable = inside.filter((w) => !verifiable(w));
     if (unverifiable.length) { reasons.push('WELL_NO_PRODUCTION_LINK'); unverifiable.forEach(ref); }

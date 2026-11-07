@@ -13,6 +13,8 @@ import { fetchDistinct, fetchLayerInfo } from '../../src/lib/open-acreage/arcgis
 import { PDQ_LEASE_CYCLE, PDQ_WELL_COMPLETION, api8, combineRRC, pdqLeaseApiMap, pullPdq, unzipLines, zipMemberDate } from '../../src/lib/open-acreage/pdq.ts';
 import { pullPermitMaster } from '../../src/lib/open-acreage/permitmaster.ts';
 import { listPendingRuns, pullPending } from '../../src/lib/open-acreage/pending.ts';
+import { normCounty, normNum, permitHits, ulSurvey } from '../../src/lib/open-acreage/candidates.ts';
+import type { PermitRecord, Section } from '../../src/lib/open-acreage/types.ts';
 import { buildDigest, pushSlack } from '../../src/lib/open-acreage/digest.ts';
 
 const [job = 'all', ...flags] = process.argv.slice(2);
@@ -76,6 +78,29 @@ async function main() {
       }, store, cfg, now), null, 1));
     }
     // diff_engine runs inside runSource (after each promote); listed as a job for the scheduler's dependency graph.
+    else if (j === 'permit_match_report') {
+      // Read-only validation of the permit rule: do University Lands permits find their UL sections, and do coordinate and text matching agree?
+      const secs = (await store.getAll('section_grid')) as Section[]; const permits = (await store.getAll('permit')) as PermitRecord[];
+      const cut = new Date(now); cut.setUTCMonth(cut.getUTCMonth() - cfg.permitMonths); const cutIso = cut.toISOString().slice(0, 10);
+      const active = permits.filter((p) => (typeof p.activity_date === 'string' ? p.activity_date : p.issued_date) as string >= cutIso && p.source_layer === 'permit');
+      const keyOf = (county: string | null | undefined, block: unknown, section: unknown) => `${normCounty(county)}|${normNum(block)}|${normNum(section)}`;
+      const byKey = new Map<string, Section[]>(); for (const s of secs) { const k = keyOf(s.county, s.block_no, s.section_no); byKey.set(k, [...(byKey.get(k) ?? []), s]); }
+      const targets = new Set(cfg.targetCounties.map(normCounty));
+      let ulLocs = 0, ulMatched = 0; const unmatched: string[] = []; const perCounty: Record<string, { ulPermits: number; matched: number }> = {};
+      for (const p of active) for (const l of ((p.locations as Array<{ county: string | null; section: string; block: string; survey: string }> | undefined) ?? [])) {
+        const cn = normCounty(l.county ?? (p.county as string)); if (!targets.has(cn) || !ulSurvey(l.survey)) continue;
+        ulLocs++; perCounty[cn] ??= { ulPermits: 0, matched: 0 }; perCounty[cn].ulPermits++;
+        if (byKey.has(keyOf(cn, l.block, l.section))) { ulMatched++; perCounty[cn].matched++; } else if (unmatched.length < 12) unmatched.push(`${cn} block "${l.block}" section "${l.section}" survey "${l.survey}" (${p.lease_name})`);
+      }
+      console.log(`permits in window (${cutIso}..): ${active.length}; UL-survey locations in target counties: ${ulLocs}; matched to a UL section: ${ulMatched} (${ulLocs ? Math.round((100 * ulMatched) / ulLocs) : 0}%)`);
+      console.log('per county:', perCounty); console.log('UNMATCHED samples (numbering/format differences show up here):'); for (const u of unmatched) console.log('  ', u);
+      // coordinate vs text agreement where a permit has both
+      let agree = 0, spatialOnly = 0, textOnly = 0; const tsecs = secs.filter((s) => targets.has(normCounty(s.county)));
+      for (const p of active) { if (!p.geom || !(p.locations as unknown[] | undefined)?.length) continue; for (const s of tsecs) { const h = permitHits(p, s, cfg); if (h.spatial || h.text) { if (h.spatial && h.text) { agree++; } else if (h.spatial) spatialOnly++; else textOnly++; } } }
+      console.log(`sections hit by permits that have BOTH coordinates and text: both methods ${agree}, coordinates only ${spatialOnly}, text only ${textOnly}`);
+      const hitCounts = { spatial: 0, text: 0, either: 0 }; for (const s of tsecs) { let sp = false, tx = false; for (const p of active) { const h = permitHits(p, s, cfg); sp ||= h.spatial; tx ||= h.text; if (sp && tx) break; } if (sp) hitCounts.spatial++; if (tx) hitCounts.text++; if (sp || tx) hitCounts.either++; }
+      console.log(`target-county UL sections: ${tsecs.length}; with an active permit by coordinates ${hitCounts.spatial}, by text ${hitCounts.text}, either ${hitCounts.either}`);
+    }
     else if (j === 'candidates_csv') {
       // Read-only export of the current candidate list for review. These are leads, never "open": each needs a courthouse title check.
       const secs = new Map((await store.getAll('section_grid')).map((s) => [`${s.source_name}:${s.source_record_id}`, s]));
