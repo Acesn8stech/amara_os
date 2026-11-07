@@ -97,7 +97,7 @@ function mapFeature(entity: EntityType, source: 'UL' | 'BLM', lessor: LeaseRecor
     default: {
       const blk = str(p, ['blocknum']); const sec = str(p, ['sectionnum']);
       const label = blk && sec ? `Block ${blk} Section ${sec}` : str(p, A.label);
-      return { ...base, entity_type: 'section_grid', county: str(p, A.county), state: str(p, A.state), label };
+      return { ...base, entity_type: 'section_grid', county: str(p, A.county), state: str(p, A.state), label, block_no: blk, section_no: sec };
     }
   }
 }

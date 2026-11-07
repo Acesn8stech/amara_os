@@ -1,6 +1,6 @@
 import { ALLOWED_CANDIDATE_STATUSES, CANDIDATE_STATUS, CONSTITUTION_VERSION, type CandidateStatus } from './constitution.ts';
 import { api8 } from './pdq.ts';
-import { centroid, haversineMiles, intersects, pointInGeometry } from './geometry.ts';
+import { centroid, haversineMiles, intersects, pointNearGeometry } from './geometry.ts';
 import type { OpenAcreageConfig } from './config.ts';
 import type { Candidate, LeaseRecord, PermitRecord, ProductionRecord, Section, SyncRun, WellRecord, BaseRecord } from './types.ts';
 
@@ -18,6 +18,8 @@ export interface CandidateInputs {
 export const REQUIRED_SOURCES = ['UL', 'BLM', 'RRC'] as const;
 
 const norm = (c: string | null | undefined) => (c ?? '').toLowerCase().replace(/\s+county$/, '').trim();
+const num = (v: unknown) => String(v ?? '').trim().replace(/^0+(?=\d)/, '').toUpperCase();
+const isUlSurvey = (s: string) => /^(UL\b|UNIVERSITY)/i.test(s.trim());
 const addMonths = (iso: string, m: number) => { const d = new Date(iso); d.setUTCMonth(d.getUTCMonth() - m); return d.toISOString().slice(0, 10); };
 const addDays = (iso: string, n: number) => new Date(Date.parse(iso) + n * 86_400_000).toISOString().slice(0, 10);
 
@@ -69,7 +71,12 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
     const g = sec.geom;
     const hits = inp.leases.filter((l) => l.geom && intersects(g, l.geom));
     if (hits.some((l) => l.status_normalized === 'ACTIVE')) continue; // (1)
-    const recentPermits = inp.permits.filter((p) => p.geom && p.issued_date && p.issued_date >= permitCut && pointInGeometry([p.geom.coordinates[0] as number, p.geom.coordinates[1] as number], g));
+    const near = (p: PermitRecord) => !!p.geom && pointNearGeometry([p.geom.coordinates[0] as number, p.geom.coordinates[1] as number], g, cfg.permitBufferMiles);
+    // Permits without coordinates still carry location text (county, block, section, survey): match University Lands surveys to the UL section's block and section.
+    const textHit = (p: PermitRecord) => ((p.locations as Array<{ county: string | null; section: string; block: string; survey: string }> | undefined) ?? []).some((l) =>
+      isUlSurvey(l.survey) && norm(l.county ?? p.county) === norm(sec.county) && num(l.block) === num(sec.block_no) && num(l.section) === num(sec.section_no) && num(sec.block_no) !== '');
+    const activity = (p: PermitRecord) => (typeof p.activity_date === 'string' ? p.activity_date : p.issued_date); // latest of issued / amended / extended / spud
+    const recentPermits = inp.permits.filter((p) => { const d = activity(p); return !!d && d >= permitCut && (near(p) || textHit(p)); });
     if (recentPermits.length) continue; // (2)
     const inside = inp.wells.filter((w) => w.geom && intersects(g, w.geom));
     if (inside.some(wellProducing)) continue; // (3)
@@ -89,10 +96,10 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
       const near = inp.wells.filter((w) => w.geom && wellProducing(w) && (() => { const wc = centroid(w.geom!); return wc && haversineMiles(c, wc) <= cfg.offsetMiles; })());
       if (near.length) { reasons.push('OFFSET_PRODUCTION'); near.forEach(ref); }
     }
-    if (inp.permits.some((p) => !p.geom && norm(p.county) === norm(sec.county))) reasons.push('PERMITS_WITHOUT_GEOMETRY');
+    if (inp.permits.some((p) => !p.geom && !((p.locations as unknown[] | undefined)?.length) && norm(p.county) === norm(sec.county))) reasons.push('PERMITS_WITHOUT_GEOMETRY');
     reasons.push('GLO_NOT_CONNECTED'); // coverage gap, informational — status unchanged
     // A permit SUBMITTED inside the window (RRC pending feed; approval is not visible there) means drilling is intended: visible HOLD, not a clean candidate.
-    const pending = inp.permits.filter((p) => p.permit_status === 'SUBMITTED' && typeof p.submit_date === 'string' && p.submit_date >= permitCut && p.geom && pointInGeometry([p.geom.coordinates[0] as number, p.geom.coordinates[1] as number], g));
+    const pending = inp.permits.filter((p) => p.permit_status === 'SUBMITTED' && typeof p.submit_date === 'string' && p.submit_date >= permitCut && near(p));
     if (pending.length) { reasons.push('PERMIT_SUBMITTED_RECENT'); pending.forEach(ref); }
     const unverifiable = inside.filter((w) => !verifiable(w));
     if (unverifiable.length) { reasons.push('WELL_NO_PRODUCTION_LINK'); unverifiable.forEach(ref); }

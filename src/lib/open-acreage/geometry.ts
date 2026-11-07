@@ -99,3 +99,19 @@ export function inBBox(geom: Geometry, box: BBox): boolean {
   const b = bboxOf(geom);
   return !!b && b.minLon >= box.minLon && b.maxLon <= box.maxLon && b.minLat >= box.minLat && b.maxLat <= box.maxLat;
 }
+
+/** True when the point is inside the geometry or within `miles` of its boundary (planar approximation; used to absorb the NAD27 vs WGS84 shift of RRC coordinates). */
+export function pointNearGeometry(pt: [number, number], g: Geometry, miles: number): boolean {
+  const b = bboxOf(g); if (!b) return false;
+  const kx = Math.cos((pt[1] * Math.PI) / 180) || 1; const degLat = miles / 69.17; const degLon = degLat / kx;
+  if (pt[0] < b.minLon - degLon || pt[0] > b.maxLon + degLon || pt[1] < b.minLat - degLat || pt[1] > b.maxLat + degLat) return false;
+  if (pointInGeometry(pt, g)) return true;
+  const toMi = (x: number, y: number): [number, number] => [(x - pt[0]) * kx * 69.17, (y - pt[1]) * 69.17];
+  for (const poly of polys(g)) for (const ring of poly) for (let i = 0; i < ring.length - 1; i++) {
+    const [ax, ay] = toMi(ring[i][0], ring[i][1]); const [bx, by] = toMi(ring[i + 1][0], ring[i + 1][1]);
+    const dx = bx - ax; const dy = by - ay; const len2 = dx * dx + dy * dy;
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2));
+    if (Math.hypot(ax + t * dx, ay + t * dy) <= miles) return true;
+  }
+  return false;
+}

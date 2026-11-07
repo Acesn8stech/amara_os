@@ -18,6 +18,8 @@ import { answer, parseIntent } from '../voice.ts';
 import { buildDigest } from '../digest.ts';
 import { listPendingRuns, parseRrcDsv, pullPending, wellboreCoord } from '../pending.ts';
 import { parseDate } from '../normalize.ts';
+import { masterFileAsOf, masterFileMonth, monthsBack, parseMasterText, pullPermitMaster } from '../permitmaster.ts';
+import { pointNearGeometry } from '../geometry.ts';
 import { disambiguateIds } from '../connectors.ts';
 import { api8, combineRRC, parseZipMemberDate, pullPdq } from '../pdq.ts';
 import type { BaseRecord, Geometry, LeaseRecord, Section, SyncRun } from '../types.ts';
@@ -461,4 +463,65 @@ test('wellbore coordinates: decimal, degrees-minutes-seconds and state plane (re
   assert.equal(wellboreCoord({ LATLONG_TYPE_CODE: '1', LAT_DEGREES: '', LONG_DEGREES: '', LAT_MINUTES: '', LAT_SECONDS: '', LONG_MINUTES: '', LONG_SECONDS: '' }), null, 'state plane only');
   assert.equal(wellboreCoord({ LATLONG_TYPE_CODE: '3', LAT_DEGREES: '31', LAT_MINUTES: '75', LAT_SECONDS: '0', LONG_DEGREES: '-103', LONG_MINUTES: '0', LONG_SECONDS: '0' }), null, 'malformed minutes are rejected, not guessed');
   assert.equal(wellboreCoord({ LATLONG_TYPE_CODE: '9', LAT_DEGREES: '31.1', LONG_DEGREES: '-103.1', LAT_MINUTES: '', LAT_SECONDS: '', LONG_MINUTES: '', LONG_SECONDS: '' })!.datum, 'UNKNOWN');
+});
+
+// Real RRC lines (daf420.dat.10-31-2026): an Andrews UL permit WITH GIS coordinates and a Reagan UL permit WITHOUT them.
+const MASTER_ANDREWS = [
+    "01087837898003UNIVERSITY 8-10E                10628658    20260929OVINTIV USA INC.                00ANNNNNNNNNNN08783782022032900000000N                       3MSN000000000000000000 E00000000000000000000000000000",
+    "02087837898003UNIVERSITY 8-10E                10   3MS1050062865801                              000000797020000000000000202609292022032920261013000000002022060220220603 000000002024032900000000                              NNNN00000000000000N10      8         UL                                                     U228  00000097103001397NE    ANDREWS      00160000NORTH        00220600EAST         00160000NORTH        00220600EAST         1.0                         O00000000 NNNN09779671 YN       00348561",
+    "0515      8               UL/ A-U233                                             000971031.0                         00001200SOUTH        00219200EAST         00001200SOUTH        00219200EAST         ANDREWS      00222800NORTH        00175000EAST         000000",
+    "14: -102.3218569  32.3932279",
+    "15: -102.3142400  32.3694920",
+  ].join('\r\n') + '\r\n';
+const MASTER_REAGAN = [
+    "01091964899383UL ACFD 4475 D                  09101935    20261023BLACK SWAN OPCO, LLC            00ANNNNNNNNNNN09196482026102800000000N                    1701UBN000000000000000000 P00000000000000000000000000000",
+    "02091964899383UL ACFD 4475 D                  091701UB0802010193501                              000000730130000000000000202610232026102800000000000000000000000000000000 000000002028102800000000                              NNNN00000000000000N17      8         UNIVERSITY LANDS                                       U152  00001127359000800W     BIG LAKE     00631800W            01093100N            00104000W            00032100N            258.0                       O00000000 NNNN09738972 YN       38342507",
+    "0528      8         163   UNIVERSITY LANDS                                       01127359258.0                       00033000W            00010000S            00098900E            00010000S            REAGAN       00473000W            01071100N            000000",
+  ].join('\r\n') + '\r\n';
+
+test('permit master (OGA049M): root fields, issue date, surface text location, BHL text, NAD27 coordinates, and counts on real lines', () => {
+  const a = parseMasterText(MASTER_ANDREWS); assert.equal(a.roots.length, 1);
+  const r = a.roots[0];
+  assert.equal(r.county_code, '003'); assert.equal(r.flag, 'A'); assert.match(r.lease, /^UNIVERSITY 8-10/); assert.equal(r.issued, '2022-03-29'); assert.equal(r.amended, '2026-10-13'); assert.equal(r.spud, '2022-06-02'); assert.ok(r.permit_no);
+  assert.ok(r.lon !== null && r.lat !== null && r.lon < -100 && r.lon > -105 && r.lat > 31 && r.lat < 33, 'longitude then latitude, Texas-sized');
+  const surf = r.locations.find((l) => l.kind === 'surface')!; assert.equal(surf.survey, 'UL'); assert.equal(surf.block, '8'); assert.equal(surf.section, '10');
+  const g = parseMasterText(MASTER_REAGAN).roots[0]; assert.equal(g.lon, null); const gs = g.locations.find((l) => l.kind === 'surface')!;
+  assert.equal(gs.survey, 'UNIVERSITY LANDS'); assert.equal(gs.block, '8'); assert.equal(gs.section, '17'); assert.equal(g.county_code, '383');
+  assert.deepEqual([masterFileMonth('daf420.dat.10-31-2026', '2026-11-06T00:00:00Z'), masterFileMonth('daf420.dat', '2026-11-06T00:00:00Z'), masterFileMonth('other.txt', 'x')], ['2026-10', '2026-11', null]);
+  assert.equal(masterFileAsOf('daf420.dat.10-31-2026', '2026-11-06T00:00:00.000Z'), '2026-10-31T00:00:00.000Z');
+  assert.deepEqual(monthsBack('2026-11-07T00:00:00Z', 3), ['2026-11', '2026-10', '2026-09']);
+});
+
+test('permit master: coverage of the required months decides OK; a later file replaces a repeated permit; datum recorded', () => {
+  const files = [{ name: 'daf420.dat.10-31-2026', text: MASTER_ANDREWS, asOfIso: '2026-11-06T00:00:00.000Z' }, { name: 'daf420.dat', text: MASTER_ANDREWS + MASTER_REAGAN, asOfIso: '2026-11-06T00:00:00.000Z' }];
+  const short = pullPermitMaster(files, '2026-11-07T00:00:00.000Z', 24);
+  assert.equal(short.state, 'UNVERIFIED'); assert.match(short.notes.join('\n'), /permit coverage INCOMPLETE: 2 of 24 months/);
+  const ok = pullPermitMaster(files, '2026-11-07T00:00:00.000Z', 2);
+  assert.equal(ok.state, 'OK'); const recs = ok.layers[0].records as BaseRecord[];
+  assert.equal(recs.length, 2, 'the repeated Andrews permit counts once'); assert.match(ok.notes.join('\n'), /1 repeated across files/);
+  assert.equal(recs.find((x) => x.county === 'ANDREWS')!.datum, 'NAD27'); assert.equal(recs.find((x) => x.county === 'REAGAN')!.geom, null);
+  assert.equal(combineRRC([ok, { source: 'RRC', state: 'OK', notes: [], layers: [{ layer: 'production', url: 'u', entity_type: 'production_monthly', skipped_unchanged: false, source_updated_at: null, records: [], unmapped: [], fields_discovered: [] }] }]).state, 'OK', 'permits + production = good sync');
+});
+
+test('permit rule 2: buffered coordinate test and text match for permits without coordinates', () => {
+  const sec = (county: string, block: string, section: string) => ({ ...section_(), county, block_no: block, section_no: section }) as Section;
+  function section_() { return section('S1'); }
+  const permit = (over: Record<string, unknown>) => ({ entity_type: 'permit', source_name: 'RRC', source_url: 'u', source_layer: 'permit', source_record_id: 'p', source_updated_at: null, retrieved_at: NOW, raw: {},
+    geom: null, permit_status: 'APPROVED', issued_date: '2026-09-01', county: 'Reeves', locations: [], ...over }) as BaseRecord;
+  const run = (permits: BaseRecord[], s: Section = sec('Reeves', '8', '17')) => buildCandidates(inputs({ sections: [s], permits }), cfg(), NOW);
+  // section is the 0.1-degree square at (-104,31): a point 0.0009 deg (~0.06 mi) outside the west edge is within the 0.15 mi buffer, 0.01 deg (~0.7 mi) is not
+  assert.equal(run([permit({ geom: { type: 'Point', coordinates: [-104.0009, 31.05] } })]).length, 0, 'inside the NAD27 buffer');
+  assert.equal(run([permit({ geom: { type: 'Point', coordinates: [-104.01, 31.05] } })]).length, 1, 'clearly outside');
+  const text = (survey: string, block: string, sect: string, county = 'REEVES') => permit({ locations: [{ kind: 'surface', county, section: sect, block, survey, abstract: '' }], county });
+  assert.equal(run([text('UNIVERSITY LANDS', '8', '17')]).length, 0, 'UL survey, same block and section: excluded');
+  assert.equal(run([text('UL', '08', '017')]).length, 0, 'leading zeros ignored');
+  assert.equal(run([text('T&P RR CO', '8', '17')]).length, 1, 'a T&P survey is not University Lands');
+  assert.equal(run([text('UNIVERSITY LANDS', '8', '18')]).length, 1, 'different section');
+  assert.equal(run([text('UNIVERSITY LANDS', '8', '17', 'LOVING')]).length, 1, 'different county');
+  assert.equal(run([permit({ geom: { type: 'Point', coordinates: [-103.95, 31.05] }, issued_date: '2020-01-01' })]).length, 1, 'older than the 24-month window');
+  assert.equal(pointNearGeometry([-103.95, 31.05], sec('x', '1', '1').geom!, 0.01), true, 'inside is near');
+  // issued long ago but amended recently: still active (the real Andrews permit: issued 2022-03-29, amended 2026-10-13)
+  const amended = permit({ geom: { type: 'Point', coordinates: [-103.95, 31.05] }, issued_date: '2022-03-29', activity_date: '2026-10-13' });
+  assert.equal(run([amended]).length, 0, 'recent amendment keeps the tract off the list');
+  assert.equal(run([{ ...amended, activity_date: '2022-03-29' } as BaseRecord]).length, 1, 'nothing recent');
 });

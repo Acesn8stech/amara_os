@@ -11,6 +11,7 @@ import { FileStore, type Store } from '../../src/lib/open-acreage/store.ts';
 import { storeFromEnv } from '../../src/lib/open-acreage/supabase-store.ts';
 import { fetchDistinct, fetchLayerInfo } from '../../src/lib/open-acreage/arcgis.ts';
 import { PDQ_LEASE_CYCLE, PDQ_WELL_COMPLETION, api8, combineRRC, pdqLeaseApiMap, pullPdq, unzipLines, zipMemberDate } from '../../src/lib/open-acreage/pdq.ts';
+import { pullPermitMaster } from '../../src/lib/open-acreage/permitmaster.ts';
 import { listPendingRuns, pullPending } from '../../src/lib/open-acreage/pending.ts';
 import { buildDigest, pushSlack } from '../../src/lib/open-acreage/digest.ts';
 
@@ -49,6 +50,12 @@ async function main() {
         // Permits / EBCDIC production: fixed-width decode (layouts must be verified, else the decoder refuses).
         const files = rrcFiles();
         if (files.length) parts.push(decodeRRC(files, { now }, undefined, files.map((f) => f.kind)));
+        // Drilling Permit Master + Trailer incl. lat/long (daf420.dat daily + daf420.dat.MM-DD-YYYY month-end files) in OA_RRC_DIR/permits.
+        const mdir = dir ? join(dir, 'permits') : '';
+        if (mdir && existsSync(mdir)) {
+          const mf = readdirSync(mdir).filter((n) => /^daf420\.dat(\.\d{2}-\d{2}-\d{4})?$/.test(n));
+          if (mf.length) parts.push(pullPermitMaster(mf.map((n) => ({ name: n, text: readFileSync(join(mdir, n), 'latin1'), asOfIso: statSync(join(mdir, n)).mtime.toISOString() })), now, cfg.permitMonths));
+        }
         // Pending-permit feed: EVERY run in OA_RRC_DIR/pending (the feed is incremental: each run lists only newly submitted permits).
         const pdir = dir ? join(dir, 'pending') : '';
         if (pdir && existsSync(pdir)) {

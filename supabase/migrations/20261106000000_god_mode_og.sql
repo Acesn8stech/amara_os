@@ -100,6 +100,7 @@ create table god_mode_og.permit (
   geom geometry(Point, 4326),
   permit_no text, issued_date date, lease_name text, county text,
   permit_status text, universal_doc_no text, operator_name text, operator_no text, submit_date date, county_code text, nearest_town text, district text, flags text[],
+  received_date date, amended_date date, extended_date date, spud_date date, permit_expires date, activity_date date, well_no text, datum text, coord_style text, locations jsonb,
   unique (source_name, source_record_id)
 );
 create index permit_geom_gix on god_mode_og.permit using gist (geom);

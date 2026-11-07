@@ -13,6 +13,8 @@ export interface OpenAcreageConfig {
   productionMonths: number; // Y
   offsetMiles: number; // Z
   recentExpiredDays: number;
+  /** A permit point this close to a tract counts as inside it (RRC coordinates are NAD27; UL geometry is WGS84). */
+  permitBufferMiles: number;
   /** Well statuses (UL codes) that may stay unlinked to RRC production without holding a tract. PA = plugged & abandoned: Scott to confirm. */
   unlinkedWellOkStatuses: string[];
   maxDropRatio: number; // >20% drop halts promote
@@ -28,6 +30,7 @@ export const DEFAULT_CONFIG: OpenAcreageConfig = {
   productionMonths: 12,
   offsetMiles: 2,
   recentExpiredDays: 365,
+  permitBufferMiles: 0.15,
   unlinkedWellOkStatuses: ['PA'],
   maxDropRatio: 0.2,
   // Generous TX + NM envelope (WGS84): TX/NM span lon -109.05..-93.5, lat 25.8..37.0
