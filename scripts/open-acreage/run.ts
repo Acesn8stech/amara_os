@@ -56,7 +56,7 @@ async function main() {
         const mdir = dir ? join(dir, 'permits') : '';
         if (mdir && existsSync(mdir)) {
           const mf = readdirSync(mdir).filter((n) => /^daf420\.dat(\.\d{2}-\d{2}-\d{4})?$/.test(n));
-          if (mf.length) parts.push(pullPermitMaster(mf.map((n) => ({ name: n, text: readFileSync(join(mdir, n), 'latin1'), asOfIso: statSync(join(mdir, n)).mtime.toISOString() })), now, cfg.permitMonths));
+          if (mf.length) parts.push(pullPermitMaster(mf.map((n) => ({ name: n, text: readFileSync(join(mdir, n), 'latin1'), asOfIso: statSync(join(mdir, n)).mtime.toISOString() })), now, cfg.permitMonths, cfg.acceptedPermitGapMonths));
         }
         // Pending-permit feed: EVERY run in OA_RRC_DIR/pending (the feed is incremental: each run lists only newly submitted permits).
         const pdir = dir ? join(dir, 'pending') : '';

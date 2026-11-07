@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_CONFIG, type OpenAcreageConfig } from '../config.ts';
+import { DEFAULT_CONFIG, loadConfig, type OpenAcreageConfig } from '../config.ts';
 import { CANDIDATE_STATUS, CONSTITUTION_VERSION } from '../constitution.ts';
 import { validateBatch } from '../validate.ts';
 import { buildCandidates, assertStatus, staleSources } from '../candidates.ts';
@@ -542,4 +542,16 @@ test('a University Lands permit with a blank block or section is flagged on cand
   assert.equal(flagged([mk('', '34')]), true); assert.equal(flagged([mk('8', '')]), true);
   assert.equal(flagged([mk('8', '34')]), false, 'complete location: it is placed (or matches a different section)');
   assert.equal(flagged([mk('', '34', 'LOVING')]), false, 'different county');
+});
+
+test('an owner-accepted missing permit month makes coverage OK but is recorded on the run and on every candidate', () => {
+  const files = [{ name: 'daf420.dat.10-31-2026', text: MASTER_ANDREWS, asOfIso: '2026-11-06T00:00:00.000Z' }, { name: 'daf420.dat', text: MASTER_REAGAN, asOfIso: '2026-11-06T00:00:00.000Z' }];
+  assert.equal(pullPermitMaster(files, '2026-11-07T00:00:00.000Z', 3).state, 'UNVERIFIED', 'September 2026 is missing and nobody accepted it');
+  const ok = pullPermitMaster(files, '2026-11-07T00:00:00.000Z', 3, ['2026-09']);
+  assert.equal(ok.state, 'OK'); assert.match(ok.notes.join('\n'), /ACCEPTED BY OWNER for 2026-09/);
+  assert.equal(pullPermitMaster(files, '2026-11-07T00:00:00.000Z', 3, ['2026-08']).state, 'UNVERIFIED', 'accepting a different month does not help');
+  const c = buildCandidates(inputs(), { ...cfg(), acceptedPermitGapMonths: ['2025-05'] }, NOW)[0];
+  assert.ok(c.reason_codes.includes('PERMIT_MONTH_UNAVAILABLE:2025-05'));
+  assert.equal(loadConfig({}, { OA_ALLOW_MISSING_PERMIT_MONTHS: '2025-05, bad ,2025-06' }).acceptedPermitGapMonths.join(), '2025-05,2025-06');
+  assert.deepEqual(loadConfig({}, {}).acceptedPermitGapMonths, [], 'off by default');
 });

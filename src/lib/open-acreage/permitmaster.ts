@@ -84,7 +84,7 @@ export function monthsBack(nowIso: string, n: number): string[] {
   return out;
 }
 
-export function pullPermitMaster(files: MasterFile[], now: string, requiredMonths: number): ConnectorResult {
+export function pullPermitMaster(files: MasterFile[], now: string, requiredMonths: number, acceptedGapMonths: string[] = []): ConnectorResult {
   const notes: string[] = []; const byKey = new Map<string, BaseRecord>(); const months = new Set<string>();
   let roots = 0; let withCoords = 0; let shortRoots = 0; let unknownLines = 0; let dup = 0; let notApproved = 0; let unverifiedCounty = 0;
   for (const f of [...files].sort((a, b) => (masterFileMonth(a.name, a.asOfIso) ?? '').localeCompare(masterFileMonth(b.name, b.asOfIso) ?? ''))) {
@@ -106,9 +106,10 @@ export function pullPermitMaster(files: MasterFile[], now: string, requiredMonth
     }
   }
   const records = [...byKey.values()];
-  const have = [...months].sort(); const need = monthsBack(now, requiredMonths); const missing = need.filter((m) => !months.has(m)).sort();
+  const have = [...months].sort(); const need = monthsBack(now, requiredMonths); const allMissing = need.filter((m) => !months.has(m)).sort(); const accepted = allMissing.filter((m) => acceptedGapMonths.includes(m)); const missing = allMissing.filter((m) => !acceptedGapMonths.includes(m));
   notes.push(`permit master files: ${files.length} (${have.length ? `${have[0]} .. ${have[have.length - 1]}` : 'none'}); ${roots} roots -> ${records.length} permits (${dup} repeated across files, later file wins); ${withCoords} roots with GIS coordinates (NAD27); ${notApproved} not flagged approved; ${unverifiedCounty} outside the configured counties (county written as UNVERIFIED code); ${shortRoots} short root lines and ${unknownLines} unrecognised lines ignored`);
-  if (missing.length) notes.push(`permit coverage INCOMPLETE: ${need.length - missing.length} of ${need.length} months present (missing: ${missing.slice(0, 6).join(', ')}${missing.length > 6 ? ', …' : ''}) — not a good sync; a recent permit in a missing month would be invisible`);
+  if (accepted.length) notes.push(`permit coverage gap ACCEPTED BY OWNER for ${accepted.join(', ')} (OA_ALLOW_MISSING_PERMIT_MONTHS): permits issued in those months are invisible; every candidate carries PERMIT_MONTH_UNAVAILABLE`);
+  if (missing.length) notes.push(`permit coverage INCOMPLETE: ${need.length - allMissing.length} of ${need.length} months present (missing: ${missing.slice(0, 6).join(', ')}${missing.length > 6 ? ', …' : ''}) — not a good sync; a recent permit in a missing month would be invisible`);
   const layer: LayerPull = { layer: 'permit', url: MASTER_EOM_URL, entity_type: 'permit', skipped_unchanged: false, source_updated_at: files.length ? files.map((f) => masterFileAsOf(f.name, f.asOfIso)).sort().pop()! : null, records, unmapped: [], fields_discovered: [] };
   return { source: 'RRC', state: missing.length || !files.length ? 'UNVERIFIED' : 'OK', layers: [layer], notes };
 }

@@ -13,6 +13,8 @@ export interface OpenAcreageConfig {
   productionMonths: number; // Y
   offsetMiles: number; // Z
   recentExpiredDays: number;
+  /** Months (YYYY-MM) of the permit master that Scott has explicitly accepted as unavailable. Empty by default; every candidate then carries PERMIT_MONTH_UNAVAILABLE:<month>. */
+  acceptedPermitGapMonths: string[];
   /** A permit point this close to a tract counts as inside it (RRC coordinates are NAD27; UL geometry is WGS84). */
   permitBufferMiles: number;
   /** Well statuses (UL codes) that may stay unlinked to RRC production without holding a tract. PA = plugged & abandoned: Scott to confirm. */
@@ -30,6 +32,7 @@ export const DEFAULT_CONFIG: OpenAcreageConfig = {
   productionMonths: 12,
   offsetMiles: 2,
   recentExpiredDays: 365,
+  acceptedPermitGapMonths: [],
   permitBufferMiles: 0.15,
   unlinkedWellOkStatuses: ['PA'],
   maxDropRatio: 0.2,
@@ -44,7 +47,7 @@ export const DEFAULT_CONFIG: OpenAcreageConfig = {
   },
 };
 
-export function loadConfig(overrides: Partial<OpenAcreageConfig> = {}, env = process.env): OpenAcreageConfig {
+export function loadConfig(overrides: Partial<OpenAcreageConfig> = {}, env: Record<string, string | undefined> = process.env): OpenAcreageConfig {
   const counties = env.OA_TARGET_COUNTIES?.split(',').map((s) => s.trim()).filter(Boolean);
   const cfg: OpenAcreageConfig = {
     ...DEFAULT_CONFIG,
@@ -52,6 +55,8 @@ export function loadConfig(overrides: Partial<OpenAcreageConfig> = {}, env = pro
     sources: { ...DEFAULT_CONFIG.sources, ...(overrides.sources ?? {}) },
     ...(counties?.length ? { targetCounties: counties } : {}),
   };
+  const gaps = env.OA_ALLOW_MISSING_PERMIT_MONTHS?.split(',').map((m) => m.trim()).filter((m) => /^\d{4}-\d{2}$/.test(m));
+  if (gaps?.length) cfg.acceptedPermitGapMonths = gaps;
   if (env.OA_KILL_SWITCH === '1') cfg.killSwitchAll = true;
   for (const k of ['UL', 'BLM', 'GLO', 'RRC'] as const) {
     if (env[`OA_KILL_${k}`] === '1') cfg.sources[k] = { ...cfg.sources[k], enabled: false };

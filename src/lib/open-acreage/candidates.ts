@@ -119,6 +119,7 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
     }
     if (inp.permits.some((p) => !p.geom && !((p.locations as unknown[] | undefined)?.length) && norm(p.county) === norm(sec.county))) reasons.push('PERMITS_WITHOUT_GEOMETRY');
     if (unplacedCounties.has(norm(sec.county))) reasons.push('UL_PERMIT_UNPLACED_IN_COUNTY'); // informational: a UL permit here could not be placed on any section
+    for (const m of cfg.acceptedPermitGapMonths) reasons.push(`PERMIT_MONTH_UNAVAILABLE:${m}`); // owner-accepted gap in the permit record, never hidden
     reasons.push('GLO_NOT_CONNECTED'); // coverage gap, informational — status unchanged
     // A permit SUBMITTED inside the window (RRC pending feed; approval is not visible there) means drilling is intended: visible HOLD, not a clean candidate.
     const pending = inp.permits.filter((p) => p.permit_status === 'SUBMITTED' && typeof p.submit_date === 'string' && p.submit_date >= permitCut && permitHits(p, sec, cfg).spatial);
