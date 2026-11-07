@@ -4,6 +4,7 @@ import type { ConnectorResult } from './connectors.ts';
 import type { OpenAcreageConfig } from './config.ts';
 import { CONSTITUTION_VERSION } from './constitution.ts';
 import { diffRecords } from './diff.ts';
+import { enrichLeaseCounties } from './enrich.ts';
 import type { Store } from './store.ts';
 import { validateBatch } from './validate.ts';
 import type { LeaseRecord, PermitRecord, ProductionRecord, RunStatus, Section, SyncRun, WellRecord, BaseRecord } from './types.ts';
@@ -53,6 +54,7 @@ export async function runSource(source: 'UL' | 'BLM' | 'GLO' | 'RRC', pull: () =
 }
 
 export async function rebuildCandidates(store: Store, cfg: OpenAcreageConfig, now: string) {
+  await enrichLeaseCounties(store, now); // derived BLM county must be current before anything reads leases by county
   const [sections, leases, permits, wells, production, parcels, runs] = await Promise.all([
     store.getAll('section_grid'), store.getAll('lease'), store.getAll('permit'), store.getAll('well'), store.getAll('production_monthly'), store.getAll('available_parcel'), store.getRuns()]);
   const c = buildCandidates({ sections: sections as Section[], leases: leases as LeaseRecord[], permits: permits as PermitRecord[], wells: wells as WellRecord[],

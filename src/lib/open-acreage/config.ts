@@ -19,6 +19,8 @@ export interface OpenAcreageConfig {
   permitBufferMiles: number;
   /** Well statuses (UL codes) that may stay unlinked to RRC production without holding a tract. PA = plugged & abandoned: Scott to confirm. */
   unlinkedWellOkStatuses: string[];
+  /** Scott's call 2026-11-07: tracts on a lease with unknown status (Under Review / no status) are NOT held. Set OA_UNKNOWN_LEASE_HOLDS=1 to hold them again. The reason code is always recorded. */
+  holdOnUnknownLeaseStatus: boolean;
   maxDropRatio: number; // >20% drop halts promote
   bbox: { minLon: number; minLat: number; maxLon: number; maxLat: number }; // TX/NM envelope
   killSwitchAll: boolean;
@@ -34,7 +36,8 @@ export const DEFAULT_CONFIG: OpenAcreageConfig = {
   recentExpiredDays: 365,
   acceptedPermitGapMonths: [],
   permitBufferMiles: 0.15,
-  unlinkedWellOkStatuses: ['PA'],
+  unlinkedWellOkStatuses: [], // Scott 2026-11-07: PA meaning unconfirmed, so every well with no RRC production link holds its tract (OA_UNLINKED_OK_STATUSES=PA to allow PA)
+  holdOnUnknownLeaseStatus: false,
   maxDropRatio: 0.2,
   // Generous TX + NM envelope (WGS84): TX/NM span lon -109.05..-93.5, lat 25.8..37.0
   bbox: { minLon: -109.06, minLat: 25.8, maxLon: -93.5, maxLat: 37.01 },
@@ -57,6 +60,9 @@ export function loadConfig(overrides: Partial<OpenAcreageConfig> = {}, env: Reco
   };
   const gaps = env.OA_ALLOW_MISSING_PERMIT_MONTHS?.split(',').map((m) => m.trim()).filter((m) => /^\d{4}-\d{2}$/.test(m));
   if (gaps?.length) cfg.acceptedPermitGapMonths = gaps;
+  if (env.OA_UNKNOWN_LEASE_HOLDS === '1') cfg.holdOnUnknownLeaseStatus = true;
+  const ok = env.OA_UNLINKED_OK_STATUSES?.split(',').map((x) => x.trim().toUpperCase()).filter(Boolean);
+  if (ok?.length) cfg.unlinkedWellOkStatuses = ok;
   if (env.OA_KILL_SWITCH === '1') cfg.killSwitchAll = true;
   for (const k of ['UL', 'BLM', 'GLO', 'RRC'] as const) {
     if (env[`OA_KILL_${k}`] === '1') cfg.sources[k] = { ...cfg.sources[k], enabled: false };

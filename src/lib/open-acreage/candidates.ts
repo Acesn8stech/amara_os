@@ -130,7 +130,7 @@ export function buildCandidates(inp: CandidateInputs, cfg: OpenAcreageConfig, no
     if (unverifiable.length) { status = 'HOLD'; reasons.push('HOLD:UNVERIFIABLE_WELL'); }
     if (pending.length) { status = 'HOLD'; reasons.push('HOLD:PERMIT_SUBMITTED'); }
     // A lease we cannot classify may be active. Never present such a tract as a clean candidate (Celilo / UNVERIFIED over approximation).
-    if (reasons.includes('LEASE_STATUS_UNKNOWN_OVERLAP')) { status = 'HOLD'; reasons.push('HOLD:UNKNOWN_LEASE_STATUS'); }
+    if (cfg.holdOnUnknownLeaseStatus && reasons.includes('LEASE_STATUS_UNKNOWN_OVERLAP')) { status = 'HOLD'; reasons.push('HOLD:UNKNOWN_LEASE_STATUS'); }
     if (stale.length) { status = 'HOLD'; reasons.push('STALE_SOURCE', ...stale.map((s) => `STALE:${s}`)); }
     out.push({ tract_id: `${sec.source_name}:${sec.source_record_id}`, county: sec.county, reason_codes: [...new Set(reasons)], evidence_refs: evidence,
       status: assertStatus(status), constitution_version: CONSTITUTION_VERSION, created_at: nowIso });

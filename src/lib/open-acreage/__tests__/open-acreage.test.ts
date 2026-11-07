@@ -20,6 +20,7 @@ import { listPendingRuns, parseRrcDsv, pullPending, wellboreCoord } from '../pen
 import { parseDate } from '../normalize.ts';
 import { masterFileAsOf, masterFileMonth, monthsBack, parseMasterText, pullPermitMaster } from '../permitmaster.ts';
 import { pointNearGeometry } from '../geometry.ts';
+import { enrichLeaseCounties } from '../enrich.ts';
 import { disambiguateIds } from '../connectors.ts';
 import { api8, combineRRC, parseZipMemberDate, pullPdq } from '../pdq.ts';
 import type { BaseRecord, Geometry, LeaseRecord, Section, SyncRun } from '../types.ts';
@@ -138,8 +139,11 @@ test('active lease, recent permit, or recent production each exclude a tract; em
   assert.equal(buildCandidates(inputs(), cfg({ targetCounties: ['Howard'] }), NOW).length, 0);
 });
 
-test('UNKNOWN-status overlapping lease forces HOLD (not a clean candidate); expired-recent flagged', () => {
-  const out = buildCandidates(inputs({ leases: [lease('U'), lease('E', { status_normalized: 'EXPIRED', expiration_date: '2026-03-01' })] }), cfg(), NOW);
+test('UNKNOWN-status overlapping lease: let through by default (Scott 2026-11-07) with the reason recorded; HOLD when OA_UNKNOWN_LEASE_HOLDS is on; expired-recent flagged', () => {
+  const leases = [lease('U'), lease('E', { status_normalized: 'EXPIRED', expiration_date: '2026-03-01' })];
+  const dflt = buildCandidates(inputs({ leases }), cfg(), NOW)[0];
+  assert.equal(dflt.status, CANDIDATE_STATUS); assert.ok(dflt.reason_codes.includes('LEASE_STATUS_UNKNOWN_OVERLAP')); assert.ok(!dflt.reason_codes.includes('HOLD:UNKNOWN_LEASE_STATUS'));
+  const out = buildCandidates(inputs({ leases }), cfg({ holdOnUnknownLeaseStatus: true }), NOW);
   assert.equal(out[0].status, 'HOLD');
   assert.equal(buildCandidates(inputs({ leases: [lease('E', { status_normalized: 'EXPIRED', expiration_date: '2026-03-01' })] }), cfg(), NOW)[0].status, CANDIDATE_STATUS);
   assert.ok(out[0].reason_codes.includes('LEASE_STATUS_UNKNOWN_OVERLAP')); assert.ok(out[0].reason_codes.includes('LEASE_EXPIRED_RECENT'));
@@ -363,10 +367,11 @@ test('candidates: a well with no RRC link holds the tract unless it is plugged; 
     source_updated_at: null, retrieved_at: NOW, raw: {}, geom: { type: 'Point', coordinates: [-103.95, 31.05] }, api_no: api, status, county: 'Reeves' }) as BaseRecord;
   const link = { entity_type: 'production_monthly', source_name: 'RRC', source_url: 'u', source_layer: 'production', source_record_id: 'k:LINK', source_updated_at: null, retrieved_at: NOW, raw: {},
     geom: null, well_or_lease_id: 'O:08:1', api8_list: ['47536324'], month: null, oil_bbl: null, gas_mcf: null } as BaseRecord;
-  const run = (wells: BaseRecord[], production: BaseRecord[] = [link]) => buildCandidates(inputs({ wells, production }), cfg(), NOW)[0];
+  const run = (wells: BaseRecord[], production: BaseRecord[] = [link], over: Partial<OpenAcreageConfig> = { unlinkedWellOkStatuses: ['PA'] }) => buildCandidates(inputs({ wells, production }), cfg(over), NOW)[0];
   assert.equal(run([w('1', '4247536324', 'PR')]).status, CANDIDATE_STATUS, 'linked to a lease but no production in window: verifiable');
   const bad = run([w('2', '4200000001', 'PR')]); assert.equal(bad.status, 'HOLD'); assert.ok(bad.reason_codes.includes('WELL_NO_PRODUCTION_LINK'));
-  assert.equal(run([w('3', '4200000002', 'PA')]).status, CANDIDATE_STATUS, 'unlinked but plugged');
+  assert.equal(run([w('3', '4200000002', 'PA')]).status, CANDIDATE_STATUS, 'unlinked but plugged (only when PA is allowed)');
+  assert.equal(run([w('3', '4200000002', 'PA')], [link], {}).status, 'HOLD', 'default: no exceptions, an unlinked PA well holds the tract');
   assert.equal(run([w('4', '4200000003', null, 'WellSHL'), w('5', '4200000003', 'PA')]).status, CANDIDATE_STATUS, 'status taken across both UL layers for the same API');
   assert.equal(run([w('6', '4200000004', null, 'WellSHL')]).status, 'HOLD', 'unlinked with no status at all');
   assert.equal(run([w('7', null, 'PA')]).status, 'HOLD', 'no usable API');
@@ -554,4 +559,24 @@ test('an owner-accepted missing permit month makes coverage OK but is recorded o
   assert.ok(c.reason_codes.includes('PERMIT_MONTH_UNAVAILABLE:2025-05'));
   assert.equal(loadConfig({}, { OA_ALLOW_MISSING_PERMIT_MONTHS: '2025-05, bad ,2025-06' }).acceptedPermitGapMonths.join(), '2025-05,2025-06');
   assert.deepEqual(loadConfig({}, {}).acceptedPermitGapMonths, [], 'off by default');
+});
+
+test('BLM county derived from the UL section grid: unambiguous overlap only, marked derived, NULL otherwise', async () => {
+  const store = new MemoryStore();
+  const sec = (id: string, county: string, x: number) => ({ ...section(id, sq(x, 31)), county }) as Section;
+  await store.promoteLayer('UL', 'UL_Section', 'section_grid', [sec('A', 'REEVES', -104), sec('B', 'LOVING', -103.9)], 'r');
+  const blm = (id: string, geom: Geometry) => ({ ...lease(id), source_name: 'BLM', source_layer: 'Authorized', lessor_type: 'FEDERAL', county: null, geom }) as LeaseRecord;
+  await store.promoteLayer('BLM', 'Authorized', 'lease', [
+    blm('inside', sq(-103.99, 31.01, 0.02)),            // inside section A only
+    blm('spans', sq(-103.95, 31.02, 0.1)),              // overlaps A and B (two counties)
+    blm('far', sq(-90, 31, 0.05)),                      // no UL section nearby
+    { ...blm('has', sq(-104, 31)), county: 'SOURCE' } as LeaseRecord], 'r');
+  const st = await enrichLeaseCounties(store, NOW);
+  assert.deepEqual([st.filled, st.ambiguous, st.noOverlap], [1, 1, 1]);
+  const by = new Map((await store.getPromoted('BLM', 'Authorized')).map((r) => [r.source_record_id, r as LeaseRecord]));
+  assert.equal(by.get('inside')!.county, 'REEVES'); assert.equal(by.get('inside')!.county_derived, true);
+  assert.equal(by.get('spans')!.county, null); assert.deepEqual(by.get('spans')!.county_candidates, ['LOVING', 'REEVES']);
+  assert.equal(by.get('far')!.county, null);
+  assert.equal(by.get('has')!.county, 'SOURCE'); assert.equal(by.get('has')!.county_derived, undefined, 'a source-stated county is never overwritten');
+  assert.equal((await enrichLeaseCounties(store, NOW)).filled, 0, 'idempotent');
 });

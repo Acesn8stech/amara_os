@@ -15,6 +15,7 @@ import { pullPermitMaster } from '../../src/lib/open-acreage/permitmaster.ts';
 import { listPendingRuns, pullPending } from '../../src/lib/open-acreage/pending.ts';
 import { normCounty, normNum, permitHits, sectionBlock, sectionNumber, ulSurvey } from '../../src/lib/open-acreage/candidates.ts';
 import type { PermitRecord, Section } from '../../src/lib/open-acreage/types.ts';
+import { enrichLeaseCounties } from '../../src/lib/open-acreage/enrich.ts';
 import { buildDigest, pushSlack } from '../../src/lib/open-acreage/digest.ts';
 
 const [job = 'all', ...flags] = process.argv.slice(2);
@@ -209,7 +210,9 @@ async function main() {
       }
     }
     else if (j === 'diff_engine') console.log('diff_engine: executed inline by each *_sync run (change_event rows written on promote)');
+    else if (j === 'enrich_county') console.log(JSON.stringify(await enrichLeaseCounties(store, now)));
     else if (j === 'candidate_builder') {
+      const en = await enrichLeaseCounties(store, now); console.log(`BLM county (derived from UL sections): ${en.filled} filled, ${en.ambiguous} ambiguous (several counties, left NULL), ${en.noOverlap} with no UL section overlap (left NULL), of ${en.leasesWithoutCounty} leases still without a county this pass`);
       const c = await rebuildCandidates(store, cfg, now); console.log(`candidates: ${c.length} (${c.filter((x) => x.status === 'HOLD').length} HOLD)`);
       // Coverage: a target county with no section grid cannot be evaluated at all (NOT FOUND, not "zero").
       const secs = await store.getAll('section_grid'); const norm = (x: unknown) => String(x ?? '').toLowerCase().replace(/\s+county$/, '').trim();
