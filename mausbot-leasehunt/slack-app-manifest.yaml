@@ -1,0 +1,61 @@
+# Slack App Manifest for the mausbot-leasehunt seats.
+#
+# IMPORTANT: Socket Mode load-balances events across every connection of ONE app, so each of the
+# six machines needs its OWN Slack app (own bot identity + own tokens). Render six manifests:
+#     python scripts/render_manifests.py        # writes build/manifests/<agent>.yaml
+# Only the MausBot (cos) manifest keeps slash commands and interactivity (Block Kit buttons).
+#
+# Channels cannot be declared in a manifest; create them with:
+#     python scripts/bootstrap_channels.py
+# Required channels: #dispatch-ops #docket-feed #title-expiration #abstract-title
+#                    #owner-intel #underwriting-cfo #exec-briefings
+
+display_information:
+  name: MausBot
+  description: Oil & gas mineral lease acquisition orchestrator (Chief of Staff)
+  background_color: "#1f2937"
+  long_description: >-
+    MausBot LeaseHunt coordinates six agent seats (MausBot, DocketBot, CourthouseBot, AbstractorBot,
+    TraceBot, CFOBot) through Slack channels and a shared state database. Every number, date and
+    owner must cite a primary public record (G4 Evidence-or-Null).
+
+features:
+  bot_user:
+    display_name: MausBot
+    always_online: true
+  slash_commands:
+    - command: /leasehunt
+      description: Pipeline control (status, scan, market, tract, ledger, resume)
+      usage_hint: "status | scan <state> <regulator> | market <wti> <gas> <permits> <baseline> | tract <id> | ledger <id> | resume"
+      should_escape: false
+    - command: /field-ticket
+      description: Show open courthouse field tickets for a tract
+      usage_hint: "<tract_id>"
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - channels:join
+      - channels:read
+      - chat:write
+      - chat:write.public
+      - commands
+      - groups:history
+      - groups:read
+      - reactions:write
+      - users:read
+
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

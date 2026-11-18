@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mausbot-leasehunt/schemas/slack_handoff.schema.json",
+  "title": "Slack handoff envelope",
+  "oneOf": [
+    {"$ref": "#/definitions/work_order"},
+    {"$ref": "#/definitions/worker_receipt"},
+    {"$ref": "#/definitions/revision_request"}
+  ],
+  "definitions": {
+    "agent_id": {"enum": ["mausbot-cos", "docket-bot", "courthouse-bot", "abstractor-bot", "trace-bot", "cfo-bot"]},
+    "evidence": {
+      "type": "object", "required": ["grade"],
+      "properties": {
+        "source_url": {"type": "string", "pattern": "^https?://"},
+        "book_page": {"type": "string"}, "docket_no": {"type": "string"},
+        "instrument_no": {"type": "string"},
+        "grade": {"enum": ["A", "B", "C", "D"]},
+        "retrieved_at": {"type": "string"}
+      }
+    },
+    "claim": {
+      "type": "object", "required": ["field", "value", "evidence"],
+      "properties": {
+        "field": {"type": "string", "minLength": 1},
+        "value": {},
+        "evidence": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/evidence"}]}
+      }
+    },
+    "work_order": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "id", "tract_id", "task_type", "from_agent", "to_agent", "payload", "created_at"],
+      "properties": {
+        "type": {"const": "WORK_ORDER"},
+        "id": {"type": "string"},
+        "tract_id": {"type": "string"},
+        "task_type": {"enum": ["MARKET_CHECK", "DOCKET_SCAN", "COURTHOUSE_SCREEN", "ABSTRACT_TITLE", "FIELD_TICKET_REQUEST",
+                               "TRACE_OWNERS", "UNDERWRITE", "ASSEMBLE_CLOSING_PACKET"]},
+        "from_agent": {"$ref": "#/definitions/agent_id"},
+        "to_agent": {"$ref": "#/definitions/agent_id"},
+        "payload": {"type": "object"},
+        "revision_of": {"type": ["string", "null"]},
+        "created_at": {"type": "string"}
+      }
+    },
+    "worker_receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "id", "work_order_id", "tract_id", "task_type", "from_agent", "to_agent", "status", "payload", "claims", "created_at"],
+      "properties": {
+        "type": {"const": "WORKER_RECEIPT"},
+        "id": {"type": "string"},
+        "work_order_id": {"type": "string"},
+        "tract_id": {"type": "string"},
+        "task_type": {"type": "string"},
+        "from_agent": {"$ref": "#/definitions/agent_id"},
+        "to_agent": {"$ref": "#/definitions/agent_id"},
+        "status": {"enum": ["COMPLETE", "PARTIAL", "BLOCKED", "FAILED"]},
+        "outcome": {"type": ["string", "null"]},
+        "payload": {"type": "object"},
+        "claims": {"type": "array", "items": {"$ref": "#/definitions/claim"}},
+        "g4_nulled": {"type": "array", "items": {"type": "string"}},
+        "created_at": {"type": "string"}
+      }
+    },
+    "revision_request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "id", "work_order_id", "tract_id", "task_type", "from_agent", "to_agent", "reasons", "attempt", "created_at"],
+      "properties": {
+        "type": {"const": "REVISION_REQUEST"},
+        "id": {"type": "string"},
+        "work_order_id": {"type": "string"},
+        "tract_id": {"type": "string"},
+        "task_type": {"type": "string"},
+        "from_agent": {"$ref": "#/definitions/agent_id"},
+        "to_agent": {"$ref": "#/definitions/agent_id"},
+        "reasons": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "attempt": {"type": "integer", "minimum": 1},
+        "created_at": {"type": "string"}
+      }
+    }
+  }
+}

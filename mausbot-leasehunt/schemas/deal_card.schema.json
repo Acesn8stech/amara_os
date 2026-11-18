@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mausbot-leasehunt/schemas/deal_card.schema.json",
+  "title": "Deal Card (G4 evidence-graded)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "tract_id", "score", "tier", "location", "nma", "gross_acres", "lease",
+               "owners", "title", "pricing", "costs", "comps", "gates", "cyclicality_kill_switch", "generated_at"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "tract_id": {"type": "string", "minLength": 1},
+    "score": {"type": "integer", "minimum": 0, "maximum": 100},
+    "tier": {"enum": ["TIER_1", "TIER_2", "REJECT"]},
+    "location": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "county", "legal_description"],
+      "properties": {
+        "state": {"type": "string", "minLength": 2, "maxLength": 2},
+        "county": {"type": "string", "minLength": 1},
+        "legal_description": {"type": "string", "minLength": 1}
+      }
+    },
+    "nma": {"$ref": "#/definitions/ev_number"},
+    "gross_acres": {"$ref": "#/definitions/ev_number"},
+    "lease": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recording", "effective_date", "primary_term_months", "expiration_date"],
+      "properties": {
+        "lessor": {"$ref": "#/definitions/ev_string"},
+        "recording": {"$ref": "#/definitions/ev_string"},
+        "effective_date": {"$ref": "#/definitions/ev_date"},
+        "primary_term_months": {"$ref": "#/definitions/ev_number"},
+        "expiration_date": {"$ref": "#/definitions/ev_date"}
+      }
+    },
+    "owners": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "status"],
+        "properties": {
+          "name": {"$ref": "#/definitions/ev_string"},
+          "status": {"enum": ["LOCATED", "DECEASED", "UNLOCATED"]},
+          "resolution_path": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "title": {
+      "type": "object", "additionalProperties": false,
+      "required": ["abstractor_status", "curative_cost_priced", "curative_cost_total", "defects", "min_evidence_grade"],
+      "properties": {
+        "abstractor_status": {"enum": ["NOT_STARTED", "TITLE_VERIFIED_CLEAN", "TITLE_DEFECTS_FOUND", "FIELD_TICKET_REQUIRED"]},
+        "curative_cost_priced": {"type": "boolean"},
+        "curative_cost_total": {"type": "number", "minimum": 0},
+        "defects": {"type": "array", "items": {"type": "string"}},
+        "min_evidence_grade": {"enum": ["A", "B", "C", "D"]}
+      }
+    },
+    "pricing": {
+      "type": "object", "additionalProperties": false,
+      "required": ["acquisition_per_nma", "exit_per_nma", "net_spread_per_nma", "min_spread_threshold", "structure", "orri_pct"],
+      "properties": {
+        "acquisition_per_nma": {"type": "number", "minimum": 0, "description": "our own offer (internal decision, not a record claim)"},
+        "exit_per_nma": {"$ref": "#/definitions/ev_number"},
+        "net_spread_per_nma": {"type": "number"},
+        "min_spread_threshold": {"type": "number", "minimum": 0},
+        "target_spread_per_nma": {"type": "number"},
+        "structure": {"enum": ["BACK_TO_BACK_LOI", "JV_SPLIT"]},
+        "buyer_name": {"type": ["string", "null"]},
+        "jv_partner_pct": {"type": "number", "minimum": 0, "maximum": 1},
+        "orri_pct": {"type": "number", "minimum": 0.01, "maximum": 0.03}
+      }
+    },
+    "costs": {
+      "type": "object", "additionalProperties": false,
+      "required": ["total_overhead_usd"],
+      "properties": {"total_overhead_usd": {"type": "number", "minimum": 0}}
+    },
+    "comps": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["comp_id", "price_per_acre", "grade"],
+        "properties": {
+          "comp_id": {"type": "string"},
+          "grade": {"enum": ["A", "B", "C", "D"]},
+          "price_per_acre": {"$ref": "#/definitions/ev_number"}
+        }
+      }
+    },
+    "gates": {
+      "type": "object", "additionalProperties": false,
+      "required": ["title", "evidence_grade", "spread", "kill_switch_clear"],
+      "properties": {
+        "title": {"type": "boolean"}, "evidence_grade": {"type": "boolean"},
+        "spread": {"type": "boolean"}, "kill_switch_clear": {"type": "boolean"}
+      }
+    },
+    "cyclicality_kill_switch": {"type": "boolean"},
+    "generated_at": {"type": "string"}
+  },
+  "definitions": {
+    "evidence": {
+      "type": "object",
+      "required": ["grade"],
+      "properties": {
+        "source_url": {"type": "string", "pattern": "^https?://"},
+        "book_page": {"type": "string", "minLength": 3},
+        "docket_no": {"type": "string", "minLength": 2},
+        "instrument_no": {"type": "string"},
+        "grade": {"enum": ["A", "B", "C", "D"]},
+        "retrieved_at": {"type": "string"}
+      },
+      "anyOf": [{"required": ["source_url"]}, {"required": ["book_page"]}, {"required": ["docket_no"]}]
+    },
+    "ev_number": {
+      "type": "object", "required": ["value", "evidence"],
+      "properties": {"value": {"type": ["number", "null"]}, "evidence": {"type": ["object", "null"]}},
+      "if": {"properties": {"value": {"type": "number"}}, "required": ["value"]},
+      "then": {"properties": {"evidence": {"$ref": "#/definitions/evidence"}}}
+    },
+    "ev_string": {
+      "type": "object", "required": ["value", "evidence"],
+      "properties": {"value": {"type": ["string", "null"]}, "evidence": {"type": ["object", "null"]}},
+      "if": {"properties": {"value": {"type": "string"}}, "required": ["value"]},
+      "then": {"properties": {"evidence": {"$ref": "#/definitions/evidence"}}}
+    },
+    "ev_date": {
+      "type": "object", "required": ["value", "evidence"],
+      "properties": {"value": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, "evidence": {"type": ["object", "null"]}},
+      "if": {"properties": {"value": {"type": "string"}}, "required": ["value"]},
+      "then": {"properties": {"evidence": {"$ref": "#/definitions/evidence"}}}
+    }
+  }
+}
