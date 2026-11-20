@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Image from 'next/image';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { DEMO_CENTER } from '@/lib/discover/demo-data';
@@ -197,13 +198,13 @@ export default function DiscoverApp() {
     for (const p of visible) {
       const isSel = selected?.id === p.id;
       const isSaved = savedIds.has(p.id);
-      const color = isSel ? '#ffffff' : isSaved ? '#ffd24a' : '#00d4ff';
+      const color = isSel ? '#ffffff' : isSaved ? '#ffd24a' : '#9db8ff';
       const poly = L.polygon(
         p.rings.map((ring) => ring.map(([lng, lat]) => [lat, lng] as L.LatLngTuple)),
         {
           color,
           weight: isSel ? 3 : 1.5,
-          fillColor: isSel ? '#00d4ff' : color,
+          fillColor: isSel ? '#9db8ff' : color,
           fillOpacity: isSel ? 0.35 : 0.12,
         },
       );
@@ -283,20 +284,31 @@ export default function DiscoverApp() {
     filters.minAcres !== '' || filters.maxAcres !== '' || filters.zoning !== 'all' || filters.owner !== '';
 
   const input =
-    'w-full rounded-md border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder-white/40 outline-none focus:border-cyan-400';
+    'w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder-white/40 outline-none focus:border-[#9db8ff]';
 
   return (
-    <div className="fixed inset-0 flex cursor-default bg-[#0a0a0f] text-white [&_button]:cursor-pointer">
+    <div className="fixed inset-0 flex cursor-default bg-[#05060b] text-white [&_button]:cursor-pointer">
       {/* ------------------------------ sidebar ------------------------------ */}
       <aside
-        className={`absolute inset-y-0 left-0 z-[1100] flex w-full flex-col border-r border-white/10 bg-[#0a0a0f]/95 backdrop-blur sm:w-96 ${
-          panelOpen ? '' : '-translate-x-full'
-        } transition-transform`}
+        className={`absolute inset-y-3 left-3 z-[1100] flex w-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-3xl border border-white/10 bg-[radial-gradient(120%_60%_at_50%_0%,rgba(157,184,255,0.10),transparent_60%)] bg-[#05060b]/90 shadow-[0_20px_80px_rgba(0,0,0,0.7)] backdrop-blur-xl sm:w-96 ${
+          panelOpen ? '' : '-translate-x-[120%]'
+        } transition-transform duration-300`}
       >
         <header className="border-b border-white/10 p-4">
-          <h1 className="text-lg font-semibold tracking-wide">
-            <span className="text-cyan-400">AMARA</span> Discover
-          </h1>
+          <div className="flex items-center gap-3">
+            <Image
+              src="/amara-face.jpg"
+              alt="AMARA"
+              width={52}
+              height={52}
+              priority
+              className="h-13 w-13 rounded-full object-cover ring-2 ring-[#9db8ff]/60 shadow-[0_0_24px_rgba(157,184,255,0.45)]"
+            />
+            <div>
+              <h1 className="text-lg font-light uppercase tracking-[0.3em] text-white">Amara</h1>
+              <p className="text-xs tracking-wide text-[#9db8ff]">Land discovery</p>
+            </div>
+          </div>
           <form onSubmit={runSearch} className="mt-3 flex gap-2">
             <input
               className={input}
@@ -308,14 +320,14 @@ export default function DiscoverApp() {
             <button
               type="submit"
               disabled={searching || query.trim().length < 2}
-              className="rounded-md bg-cyan-500 px-3 text-sm font-medium text-black disabled:opacity-40"
+              className="rounded-xl bg-[#9db8ff] px-3 text-sm font-medium text-black disabled:opacity-40"
             >
               {searching ? '…' : 'Go'}
             </button>
           </form>
 
           {(searchResults || searchError) && (
-            <div className="mt-2 max-h-56 overflow-auto rounded-md border border-white/10 bg-black/40 text-sm">
+            <div className="mt-2 max-h-56 overflow-auto rounded-xl border border-white/10 bg-black/40 text-sm">
               <button
                 onClick={clearSearch}
                 className="w-full border-b border-white/10 px-3 py-1 text-right text-xs text-white/50 hover:text-white"
@@ -329,7 +341,7 @@ export default function DiscoverApp() {
                   onClick={() => selectParcel(p)}
                   className="block w-full px-3 py-2 text-left hover:bg-white/10"
                 >
-                  <span className="text-cyan-300">Parcel {p.apn}</span>
+                  <span className="text-[#c4d3ff]">Parcel {p.apn}</span>
                   <span className="block text-xs text-white/60">
                     {p.owner} · {p.siteAddress}
                   </span>
@@ -380,7 +392,7 @@ export default function DiscoverApp() {
               onChange={(e) => setFilters({ ...filters, zoning: e.target.value })}
             >
               {zoningOptions.map((z) => (
-                <option key={z} value={z} className="bg-[#0a0a0f]">
+                <option key={z} value={z} className="bg-[#05060b]">
                   {z === 'all' ? 'All zoning' : z}
                 </option>
               ))}
@@ -397,7 +409,7 @@ export default function DiscoverApp() {
           {filtersActive && (
             <button
               onClick={() => setFilters(DEFAULT_FILTERS)}
-              className="col-span-2 text-left text-xs text-cyan-400 hover:underline"
+              className="col-span-2 text-left text-xs text-[#9db8ff] hover:underline"
             >
               Reset filters
             </button>
@@ -410,7 +422,7 @@ export default function DiscoverApp() {
               key={t}
               onClick={() => setTab(t)}
               className={`flex-1 px-4 py-2 capitalize ${
-                tab === t ? 'border-b-2 border-cyan-400 text-white' : 'text-white/50'
+                tab === t ? 'border-b-2 border-[#9db8ff] text-white' : 'text-white/50'
               }`}
             >
               {t === 'results' ? `In view (${visible.length})` : `Saved (${saved.length})`}
@@ -437,12 +449,12 @@ export default function DiscoverApp() {
                 <button
                   onClick={() => selectParcel(p)}
                   className={`block w-full border-b border-white/5 px-4 py-3 text-left hover:bg-white/5 ${
-                    selected?.id === p.id ? 'bg-cyan-400/10' : ''
+                    selected?.id === p.id ? 'bg-[#9db8ff]/10' : ''
                   }`}
                 >
                   <span className="flex items-baseline justify-between gap-2">
                     <span className="text-sm font-medium">{p.siteAddress}</span>
-                    <span className="shrink-0 text-xs text-cyan-300">{fmtAcres(p.acres)} ac</span>
+                    <span className="shrink-0 text-xs text-[#c4d3ff]">{fmtAcres(p.acres)} ac</span>
                   </span>
                   <span className="block text-xs text-white/50">
                     {p.owner} · {p.zoning} · APN {p.apn}
@@ -465,24 +477,24 @@ export default function DiscoverApp() {
 
       {/* -------------------------------- map -------------------------------- */}
       <main className="relative h-full w-full">
-        <div ref={mapEl} className="h-full w-full" />
+        <div ref={mapEl} className="h-full w-full !bg-[#05060b]" />
 
         <button
           onClick={() => setPanelOpen((o) => !o)}
-          className={`absolute top-3 z-[1200] rounded-md border border-white/20 bg-[#0a0a0f]/90 px-3 py-2 text-sm ${
-            panelOpen ? 'right-3 sm:right-auto sm:left-[24.75rem]' : 'left-3'
+          className={`absolute top-3 z-[1200] rounded-xl border border-white/20 bg-[#05060b]/90 px-3 py-2 text-sm ${
+            panelOpen ? 'right-6 sm:right-auto sm:left-[25.5rem]' : 'left-3'
           }`}
           aria-label={panelOpen ? 'Hide panel' : 'Show panel'}
         >
           {panelOpen ? '‹' : '☰'}
         </button>
 
-        <div className="absolute right-3 top-3 z-[1050] flex overflow-hidden rounded-md border border-white/20 bg-[#0a0a0f]/90 text-sm">
+        <div className="absolute right-3 top-3 z-[1050] flex overflow-hidden rounded-xl border border-white/20 bg-[#05060b]/90 text-sm">
           {(['satellite', 'streets'] as const).map((id) => (
             <button
               key={id}
               onClick={() => setBaseLayer(id)}
-              className={`px-3 py-2 capitalize ${baseLayer === id ? 'bg-cyan-500 text-black' : ''}`}
+              className={`px-3 py-2 capitalize ${baseLayer === id ? 'bg-[#9db8ff] text-black' : ''}`}
             >
               {id}
             </button>
@@ -490,14 +502,14 @@ export default function DiscoverApp() {
         </div>
 
         {loading && (
-          <div className="absolute left-1/2 top-3 z-[1050] -translate-x-1/2 rounded-full bg-[#0a0a0f]/90 px-3 py-1 text-xs text-cyan-300">
+          <div className="absolute left-1/2 top-3 z-[1050] -translate-x-1/2 rounded-full bg-[#05060b]/90 px-3 py-1 text-xs text-[#c4d3ff]">
             Loading parcels…
           </div>
         )}
 
         {/* --------------------------- parcel detail --------------------------- */}
         {selected && (
-          <div className="absolute inset-x-3 bottom-3 z-[1050] rounded-lg border border-white/15 bg-[#0a0a0f]/95 p-4 shadow-xl backdrop-blur sm:inset-x-auto sm:right-3 sm:top-16 sm:bottom-auto sm:w-80">
+          <div className="absolute inset-x-3 bottom-3 z-[1050] rounded-3xl border border-white/10 bg-[#05060b]/85 p-5 shadow-[0_20px_80px_rgba(0,0,0,0.7)] backdrop-blur-xl sm:inset-x-auto sm:right-3 sm:top-16 sm:bottom-auto sm:w-80">
             <div className="flex items-start justify-between gap-2">
               <div>
                 <h2 className="text-base font-semibold">{selected.siteAddress}</h2>
@@ -526,15 +538,15 @@ export default function DiscoverApp() {
             <div className="mt-4 flex flex-wrap gap-2 text-sm">
               <button
                 onClick={() => toggleSaved(selected)}
-                className={`rounded-md px-3 py-1.5 font-medium ${
-                  savedIds.has(selected.id) ? 'bg-amber-400 text-black' : 'bg-cyan-500 text-black'
+                className={`rounded-xl px-3 py-1.5 font-medium ${
+                  savedIds.has(selected.id) ? 'bg-amber-400 text-black' : 'bg-[#9db8ff] text-black'
                 }`}
               >
                 {savedIds.has(selected.id) ? 'Saved ✓' : 'Save'}
               </button>
               <button
                 onClick={() => void navigator.clipboard?.writeText(selected.apn)}
-                className="rounded-md border border-white/20 px-3 py-1.5"
+                className="rounded-xl border border-white/20 px-3 py-1.5"
               >
                 Copy APN
               </button>
@@ -542,7 +554,7 @@ export default function DiscoverApp() {
                 href={`https://www.google.com/maps/search/?api=1&query=${selected.center[0]},${selected.center[1]}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="rounded-md border border-white/20 px-3 py-1.5"
+                className="rounded-xl border border-white/20 px-3 py-1.5"
               >
                 Google Maps ↗
               </a>
