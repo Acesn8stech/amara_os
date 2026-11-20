@@ -23,6 +23,12 @@ Copy `.env.local.example` to `.env.local` and fill in values as needed.
 - `OPENAI_MODEL` — fallback OpenAI model name
 - `NEXT_PUBLIC_DEMO_MODE` — `true` enables automatic state cycling demo mode
 
+## Discover (`/discover`)
+
+A land-parcel explorer: satellite/street map, address / APN / owner search, acreage / zoning / owner filters, parcel detail panel and a saved list (stored in the browser).
+
+Out of the box it shows clearly-labelled **demo parcels**. To load real data, set `PARCEL_QUERY_URL` (and optionally `PARCEL_FIELDS`) in `.env.local` to point at a county ArcGIS parcel layer — see `.env.local.example`.
+
 ## Notes
 
 Task 1 provides the visual foundation only. Task 2 will add voice input, TTS, and AI backend integration.
