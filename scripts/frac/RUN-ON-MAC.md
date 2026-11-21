@@ -19,6 +19,12 @@ lateral_ft is blank for every row: the RRC publishes no planned lateral length.
     python3 scripts/frac/adapters/fracfocus_to_frac.py --zip ~/frac-data/fracfocus/FracFocusCSV.zip --list-purposes
 Check that every value listed really means proppant (sand, ceramic, etc.).
 
+## 3b. Why are so many proppant figures unknown? (read-only, a few minutes)
+    python3 scripts/frac/adapters/fracfocus_to_frac.py --zip ~/frac-data/fracfocus/FracFocusCSV.zip --diagnose
+Per year: how many Texas jobs, how many have an ingredient mass at all, how many have a proppant-purpose
+row with a mass, and how many have a sand-like ingredient name with a mass. A big gap between the last two
+means proppant is recorded under a purpose the matcher does not recognize. Paste the result to Claude.
+
 ## 4. Build frac.csv (streams the zip, never extracts it; Texas only)
     python3 scripts/frac/adapters/fracfocus_to_frac.py --zip ~/frac-data/fracfocus/FracFocusCSV.zip --output ~/frac-data/work/frac.csv
 It prints which job-key column it used. If it stops on a header mismatch, tell Claude.

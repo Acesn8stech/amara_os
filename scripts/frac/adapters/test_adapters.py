@@ -214,6 +214,71 @@ class FracFocus(unittest.TestCase):
         self.assertEqual(set(Path(zpath).parent.iterdir()), before)
 
 
+class ProppantMatching(unittest.TestCase):
+    def test_propping_agent_and_typos_count_as_proppant(self):
+        for p in ("Proppant", "PROPPANT", "Propping Agent", "propping agent", "Proppan", "Proppant (30/50 Mesh)",
+                  "Resin coated proppant", "Proppant - Natural", "Fracturing Sand, Propping Agent"):
+            self.assertTrue(ffz.is_proppant(p), p)
+
+    def test_additives_about_proppant_do_not_count(self):
+        for p in ("Proppant Transport Polymer", "Proppant Binder 1", "Proppant Resin Coat Activator",
+                  "Proppant Suspending Agent", "Proppant Carrier Fluid", "PROPPANT SHIELD",
+                  "Activator for TURBOprop Proppant", "Proppant/Friction Reduction"):
+            self.assertFalse(ffz.is_proppant(p), p)
+
+    def test_multi_value_purpose_judged_per_token(self):
+        self.assertTrue(ffz.is_proppant("Additive, Breaker, Friction Reducer, Gelling Agent, Proppant, Surfactant"))
+        self.assertFalse(ffz.is_proppant("Additive, Breaker, Friction Reducer, Gelling Agent, Surfactant"))
+        self.assertFalse(ffz.is_proppant("Additive, Proppant Binder 1, Surfactant"))
+        self.assertTrue(ffz.is_proppant("Acid, Friction Reducer, Chelating Agent, Propping Agent"))
+
+    def test_unrelated_and_empty(self):
+        self.assertFalse(ffz.is_proppant("Friction Reducer"))
+        self.assertFalse(ffz.is_proppant(""))
+        self.assertFalse(ffz.is_proppant(None))
+
+    def test_propping_agent_job_gets_proppant_mass_through_the_adapter(self):
+        rows_ = [row("p1", "8/1/2022", "42389457000000", "Texas", "Reeves", "HAL CO", "6000000", "Propping Agent", "9000"),
+                 row("p1", "8/1/2022", "42389457000000", "Texas", "Reeves", "HAL CO", "6000000", "Propping Agent", "1000")]
+        out = str(Path(tempfile.mkdtemp()) / "frac.csv")
+        res = ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER, rows_)}), out)
+        with open(out) as handle:
+            r = list(csv.DictReader(handle))[0]
+        self.assertEqual(float(r["proppant_lb"]), 10000.0)
+
+    def test_multi_value_rows_are_counted_in_stats(self):
+        rows_ = [row("m1", "8/1/2022", "42389457100000", "Texas", "Reeves", "OP M", "6000000",
+                     "Additive, Friction Reducer, Proppant", "500")]
+        out = str(Path(tempfile.mkdtemp()) / "frac.csv")
+        res = ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER, rows_)}), out)
+        self.assertEqual(res["stats"]["proppant_rows_from_multi_value_purpose"], 1)
+
+
+class Diagnose(unittest.TestCase):
+    def test_diagnose_breaks_unknowns_down_by_year(self):
+        h = HEADER
+        rows_ = [
+            row("d1", "5/1/2022", "42389460010000", "Texas", "Reeves", "A", "5000000", "Proppant", "100"),
+            row("d1", "5/1/2022", "42389460010000", "Texas", "Reeves", "A", "5000000", "Water", ""),
+            row("d2", "6/1/2022", "42389460020000", "Texas", "Reeves", "B", "5000000", "Sand Thing", "200"),     # sand named, purpose not matched
+            row("d3", "6/1/2012", "42389460030000", "Texas", "Reeves", "C", "5000000", "", ""),                  # header-only era
+            row("d4", "6/1/2022", "30015000010000", "New Mexico", "Eddy", "D", "1", "Proppant", "5"),
+            row("d5", "7/1/2022", "42389460050000", "Texas", "Reeves", "E", "5000000", "Proppant", ""),   # labeled proppant, no mass
+        ]
+        for r in rows_:
+            r[12] = "Crystalline Silica" if r[11] == "Sand Thing" else r[12]
+        zpath = make_zip({"FracFocusRegistry_1.csv": (h, rows_)})
+        res = ffz.diagnose(zpath)
+        self.assertEqual(res["jobs_total"], 4)                      # New Mexico excluded
+        y22, y12 = res["by_year"]["2022"], res["by_year"]["2012"]
+        self.assertEqual(y22["jobs"], 3)
+        self.assertEqual(y22["proppant_purpose_match"], 2)          # d1 and d5
+        self.assertEqual(y22["proppant_purpose_match_with_mass"], 1)  # only d1 has a mass
+        self.assertEqual(y22["sand_like_ingredient_with_mass"], 1)
+        self.assertEqual(y12["any_ingredient_mass"], 0)
+        self.assertEqual(res["top_single_value_purposes_containing_propp"], {"Proppant": 2})
+
+
 class EndToEndWithCore(unittest.TestCase):
     def test_adapter_output_joins_in_the_core(self):
         """8-digit RRC API and 14-digit FracFocus API must meet at the same well."""

@@ -51,8 +51,19 @@ def num(value):
         return None
 
 
+# Purpose strings are free text and sometimes a comma-separated list of everything a product
+# does ("Additive, Breaker, ..., Proppant"). Judge each comma-separated token on its own:
+# "propp" catches Proppant, Propping Agent (a common service-company wording) and typos like
+# "Proppan"; the words below mark ADDITIVES ABOUT proppant (binders, carriers...), not proppant.
+NOT_PROPPANT_WORDS = ("suspend", "transport", "carry", "carrier", "binder", "activator",
+                      "shield", "polymer", "perforation", "friction", "fluid loss")
+
+
 def is_proppant(purpose):
-    return "proppant" in (purpose or "").lower()
+    for token in (purpose or "").lower().split(","):
+        if "propp" in token and not any(w in token for w in NOT_PROPPANT_WORDS):
+            return True
+    return False
 
 
 def registry_members(zf):
@@ -111,6 +122,8 @@ def aggregate(rows, header, job_key, state="TEXAS", county=None, stats=None, job
             stats["job_water_conflicts"] += 1   # same job, different job-level value; first kept
         if is_proppant(g(row, "Purpose")):
             job["prop_rows"] += 1
+            if "," in g(row, "Purpose"):
+                stats["proppant_rows_from_multi_value_purpose"] += 1   # sand mixed with other additives
             mass = num(g(row, "MassIngredient"))
             if mass is not None and mass > 0:
                 job["prop"] += mass
@@ -153,6 +166,71 @@ def list_purposes(zf, member_limit=None):
     return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
 
 
+SAND_WORDS = ("silica", "quartz", "sand", "ceramic", "bauxite")
+
+
+def diagnose(zip_path, county=None, job_key=None, top=25):
+    """Why are proppant figures unknown? Per-year counts for Texas jobs, read-only."""
+    jobs = {}
+    purposes = defaultdict(int)
+    want = county.strip().upper() if county else None
+    with zipfile.ZipFile(zip_path) as zf:
+        for member in registry_members(zf):
+            with open_text(zf, member) as handle:
+                reader = csv.reader(handle)
+                header = next(reader)
+                key_name = check_header(header, job_key)
+                idx = {n: i for i, n in enumerate(header)}
+                g = lambda row, n: row[idx[n]] if n in idx and idx[n] < len(row) else ""
+                for row in reader:
+                    if g(row, "StateName").strip().upper() != "TEXAS":
+                        continue
+                    if want and g(row, "CountyName").strip().upper() != want:
+                        continue
+                    key = g(row, key_name)
+                    if not key:
+                        continue
+                    job = jobs.get(key)
+                    if job is None:
+                        start = parse_date(g(row, "JobStartDate"))
+                        job = jobs[key] = {"year": start[:4] if start else "unknown",
+                                           "rows": 0, "matched": False, "matched_mass": False,
+                                           "any_mass": False, "sand_name": False, "sand_mass": False,
+                                           "water": (num(g(row, "TotalBaseWaterVolume")) or 0) > 0}
+                    job["rows"] += 1
+                    mass = num(g(row, "MassIngredient"))
+                    has_mass = mass is not None and mass > 0
+                    job["any_mass"] |= has_mass
+                    purpose = g(row, "Purpose")
+                    if "," not in purpose and "propp" in purpose.lower():
+                        purposes[purpose.strip()] += 1
+                    if is_proppant(purpose):
+                        job["matched"] = True
+                        job["matched_mass"] |= has_mass
+                    name = g(row, "IngredientName").lower()
+                    if any(w in name for w in SAND_WORDS):
+                        job["sand_name"] = True
+                        job["sand_mass"] |= has_mass
+    by_year = defaultdict(lambda: defaultdict(int))
+    for job in jobs.values():
+        y = by_year[job["year"]]
+        y["jobs"] += 1
+        y["have_water"] += job["water"]
+        y["any_ingredient_mass"] += job["any_mass"]
+        y["proppant_purpose_match"] += job["matched"]
+        y["proppant_purpose_match_with_mass"] += job["matched_mass"]
+        y["sand_like_ingredient_name"] += job["sand_name"]
+        y["sand_like_ingredient_with_mass"] += job["sand_mass"]
+        y["rows_per_job_zero_or_one"] += job["rows"] <= 1
+    return {"jobs_total": len(jobs),
+            "by_year": {k: dict(v) for k, v in sorted(by_year.items())},
+            "top_single_value_purposes_containing_propp": dict(sorted(purposes.items(), key=lambda kv: -kv[1])[:top]),
+            "how_to_read": "proppant_purpose_match_with_mass is what the adapter will use. If "
+                           "sand_like_ingredient_with_mass is much larger, proppant is recorded "
+                           "under purposes the matcher does not recognize. If any_ingredient_mass "
+                           "is low, the source has no ingredient masses for that job."}
+
+
 def convert(zip_path, out_path, county=None, job_key=None):
     stats, jobs = defaultdict(int), {}
     with zipfile.ZipFile(zip_path) as zf:
@@ -184,7 +262,12 @@ def main(argv=None):
     ap.add_argument("--county")
     ap.add_argument("--job-key")
     ap.add_argument("--list-purposes", action="store_true")
+    ap.add_argument("--diagnose", action="store_true",
+                    help="per-year breakdown of why proppant figures are unknown (read-only)")
     args = ap.parse_args(argv)
+    if args.diagnose:
+        print(json.dumps(diagnose(args.zip, args.county, args.job_key), indent=1))
+        return 0
     if args.list_purposes:
         with zipfile.ZipFile(args.zip) as zf:
             print(json.dumps(list_purposes(zf), indent=1))
