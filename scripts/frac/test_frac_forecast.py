@@ -235,6 +235,73 @@ class Backtest(unittest.TestCase):
         self.assertEqual(summary["gate_G3_beats_baseline"], "UNKNOWN")
 
 
+class Explain(unittest.TestCase):
+    def setUp(self):
+        self.p, self.f, self.joined, _ = prepared()
+        self.as_of = date(2024, 6, 1)
+        self.model = ff.fit(self.joined, self.p, self.as_of)
+
+    def row(self, **kw):
+        base = {"api": "4238999000", "permit_date": self.as_of - timedelta(days=100), "operator": "ALPHA OIL",
+                "county": "REEVES", "lateral_ft": 10000, "frac_start": self.as_of + timedelta(days=20),
+                "water_gal": 20_000_000.0, "proppant_lb": None, "lag_days": 120}
+        base.update(kw)
+        return base
+
+    def test_each_cause_is_classified(self):
+        rows = [self.row(),                                                                   # modelled
+                self.row(permit_date=self.as_of + timedelta(days=5), frac_start=self.as_of + timedelta(days=30)),
+                self.row(permit_date=self.as_of - timedelta(days=ff.MAX_PERMIT_AGE + 60)),
+                self.row(operator="NEW OPERATOR LLC", county="NOWHERE")]   # unknown operator falls back to ALL: still modelled
+        water, counts, _, _ = ff.classify_actuals(self.p, rows, self.model, self.as_of, 13)
+        self.assertEqual(counts["modelled"], 2)
+        self.assertEqual(counts["permit_issued_after_forecast_date"], 1)
+        self.assertEqual(counts[f"permit_older_than_{ff.MAX_PERMIT_AGE}_day_cutoff"], 1)
+
+    def test_no_model_class_only_when_nothing_to_fall_back_on(self):
+        empty = ff.fit([], {}, self.as_of)
+        _, counts, _, _ = ff.classify_actuals(self.p, [self.row()], empty, self.as_of, 13)
+        self.assertEqual(counts, {"no_lag_model_for_operator": 1})
+
+    def test_only_fracs_inside_the_horizon_count(self):
+        rows = [self.row(frac_start=self.as_of - timedelta(days=1)), self.row(frac_start=self.as_of + timedelta(weeks=14))]
+        water, counts, _, _ = ff.classify_actuals(self.p, rows, self.model, self.as_of, 13)
+        self.assertEqual(counts, {})
+
+    def test_cause_shares_sum_to_one_and_match_actual_total(self):
+        first = date(2024, 1, 1)
+        results, summary = ff.backtest(self.p, self.joined, first, date(2024, 6, 30), explain=True)
+        self.assertAlmostEqual(sum(summary["actual_water_by_cause_share"].values()), 1.0, delta=0.01)
+
+    def test_intensity_ratio_is_near_one_in_a_world_with_known_intensity(self):
+        _, summary = ff.backtest(self.p, self.joined, date(2024, 1, 1), date(2024, 6, 30), explain=True)
+        self.assertAlmostEqual(summary["per_well_volume_actual_over_predicted_for_modelled_wells"], 1.0, delta=0.2)
+
+    def test_intensity_ratio_direction_when_actuals_run_double(self):
+        """Fracs after 2024-01-01 use twice the water the model learned from: ratio must be well above 1."""
+        doubled = [dict(r, water_gal=(r["water_gal"] or 0) * 2) if r["frac_start"] > date(2024, 1, 1) else r
+                   for r in self.joined]
+        _, summary = ff.backtest(self.p, doubled, date(2024, 1, 1), date(2024, 3, 1), explain=True)
+        self.assertGreater(summary["per_well_volume_actual_over_predicted_for_modelled_wells"], 1.4)
+
+    def test_summary_only_cli_omits_windows_and_explain_adds_causes(self):
+        import io, contextlib, csv
+        permits, fracs = world()
+        def write(rows, name):
+            path = Path(tempfile.mkdtemp()) / name
+            with open(path, "w", newline="") as h:
+                w = csv.DictWriter(h, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+            return str(path)
+        p, f = write(permits, "p.csv"), write(fracs, "f.csv")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            ff.main(["backtest", "--permits", p, "--frac", f, "--summary-only", "--explain"])
+        data = json.loads(out.getvalue())
+        self.assertNotIn("windows", data)
+        self.assertIn("actual_water_by_cause_share", data["summary"])
+        self.assertIn("windows_where_model_beat_baseline", data["summary"])
+
+
 class CLI(unittest.TestCase):
     def _write(self, rows, name):
         import csv

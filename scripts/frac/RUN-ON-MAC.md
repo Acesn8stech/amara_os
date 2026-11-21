@@ -56,6 +56,9 @@ confirm date, operator and volumes match.
 ## 6. Backtest (gates G2/G3) and a live forecast
     python3 scripts/frac/frac_forecast.py backtest --permits ~/frac-data/work/permits.csv --frac ~/frac-data/work/frac.csv --county REEVES --from-date 2016-01-01
     python3 scripts/frac/frac_forecast.py forecast --permits ~/frac-data/work/permits.csv --frac ~/frac-data/work/frac.csv --as-of 2026-11-21 --county REEVES
+Add `--summary-only` to skip the long per-window list, and `--explain` to split the actual volume by why the model
+could or could not predict it (permit issued after the forecast date, permit older than the cutoff, per-well
+volume bias, ...). Use both together: `... backtest ... --from-date 2016-01-01 --summary-only --explain`.
 Do not tune anything to make a gate pass. Report the numbers as printed, including "not good enough".
 
 ## Tests

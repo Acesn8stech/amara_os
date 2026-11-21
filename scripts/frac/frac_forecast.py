@@ -284,8 +284,48 @@ def wape(pred, act):
     return None if total <= 0 else sum(abs(p - a) for p, a in zip(pred, act)) / total
 
 
-def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30):
+def classify_actuals(permits, joined, model, as_of, weeks):
+    """Split the ACTUAL water used in the horizon by why the model could or could not predict it.
+
+    Classes: permit_issued_after_forecast_date (short lag, unknowable then), permit_older_than_cutoff
+    (dropped by MAX_PERMIT_AGE), no_lag_model_for_operator, overdue_no_comparable_history, modelled
+    (the model had a chance). Also returns actual vs predicted per-well volume for the modelled wells.
+    """
+    end = as_of + timedelta(weeks=weeks)
+    water, counts = defaultdict(float), defaultdict(int)
+    num = den = 0.0
+    old_key = f"permit_older_than_{MAX_PERMIT_AGE}_day_cutoff"
+    for r in joined:
+        if not (as_of < r["frac_start"] <= end):
+            continue
+        w = r["water_gal"] or 0.0
+        age = (as_of - r["permit_date"]).days
+        if r["permit_date"] > as_of:
+            cls = "permit_issued_after_forecast_date"
+        elif age > MAX_PERMIT_AGE:
+            cls = old_key
+        else:
+            lags, _ = pick(model["lags"], r["operator"], r["county"])
+            if not lags:
+                cls = "no_lag_model_for_operator"
+            elif len([x for x in lags if x > age]) < 3:
+                cls = "overdue_no_comparable_history"
+            else:
+                cls = "modelled"
+        water[cls] += w
+        counts[cls] += 1
+        if cls == "modelled" and w:
+            per_well, _ = pick(model["water_well"], r["operator"], r["county"])
+            if per_well:
+                num += w
+                den += statistics.median(per_well)
+    return dict(water), dict(counts), num, den
+
+
+def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30, explain=False):
     results, d = [], first_as_of
+    cause_water, cause_counts = defaultdict(float), defaultdict(int)
+    ratio_num = ratio_den = 0.0
     while d <= last_as_of:
         model = fit(joined, permits, d)
         buckets, notes = forecast(permits, model, d, weeks)
@@ -295,6 +335,14 @@ def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30):
         recent = sum(r["water_gal"] or 0.0 for r in joined
                      if d - timedelta(days=28) < r["frac_start"] <= d)
         base_w = [recent / 4.0] * weeks
+        if explain:
+            cw, cc, n_, d_ = classify_actuals(permits, joined, model, d, weeks)
+            for k, v in cw.items():
+                cause_water[k] += v
+            for k, v in cc.items():
+                cause_counts[k] += v
+            ratio_num += n_
+            ratio_den += d_
         results.append({"as_of": d.isoformat(),
                         "model_wape": wape(pred_w, act_w), "baseline_wape": wape(base_w, act_w),
                         "pred_total": sum(pred_w), "actual_total": sum(act_w),
@@ -312,6 +360,18 @@ def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30):
     else:
         summary["gate_G3_beats_baseline"] = UNKNOWN
         summary["reason"] = "no window had both a forecast and actual volume"
+    if scored:
+        wins = sum(1 for r in scored if r["model_wape"] < r["baseline_wape"])
+        summary["windows_where_model_beat_baseline"] = f"{wins} of {len(scored)}"
+        errs = [(r["pred_total"] - r["actual_total"]) / r["actual_total"] for r in scored if r["actual_total"] > 0]
+        summary["horizon_total_error_p25_median_p75"] = [round(percentile(sorted(errs), q), 3) for q in (0.25, 0.5, 0.75)]
+    if explain:
+        total = sum(cause_water.values()) or 1.0
+        summary["actual_water_by_cause_share"] = {k: round(v / total, 3) for k, v in
+                                                  sorted(cause_water.items(), key=lambda kv: -kv[1])}
+        summary["actual_wells_by_cause"] = dict(cause_counts)
+        summary["per_well_volume_actual_over_predicted_for_modelled_wells"] = (
+            round(ratio_num / ratio_den, 3) if ratio_den else None)
     return results, summary
 
 
@@ -338,6 +398,10 @@ def main(argv=None):
         s.add_argument("--weeks", type=int, default=13)
     sub.choices["forecast"].add_argument("--as-of", required=True)
     sub.choices["backtest"].add_argument("--from-date", help="first as-of date (YYYY-MM-DD); default: 1 year after the first frac")
+    sub.choices["backtest"].add_argument("--explain", action="store_true",
+                                         help="split actual volume by why the model could/could not predict it")
+    sub.choices["backtest"].add_argument("--summary-only", action="store_true",
+                                         help="print only the summary and join report (no per-window list)")
     sub.choices["backtest"].add_argument("--to-date", help="last as-of date (YYYY-MM-DD); default: last frac minus the horizon")
     args = ap.parse_args(argv)
 
@@ -373,8 +437,11 @@ def main(argv=None):
         print(json.dumps({"status": "NOT_ENOUGH_HISTORY",
                           "need": "at least ~1 year of fracs plus the forecast horizon"}))
         return 2
-    results, summary = backtest(permits, joined, first, last, args.weeks)
-    print(json.dumps({"summary": summary, "windows": results, "join": report}, indent=1))
+    results, summary = backtest(permits, joined, first, last, args.weeks, explain=args.explain)
+    payload = {"summary": summary, "join": report}
+    if not args.summary_only:
+        payload["windows"] = results
+    print(json.dumps(payload, indent=1))
     return 0 if summary.get("gate_G3_beats_baseline") is True else 1
 
 
