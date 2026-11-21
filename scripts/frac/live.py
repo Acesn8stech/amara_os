@@ -12,7 +12,8 @@ What it does, forever, until stopped:
     event is also printed, so a Claude session can stream it with the Monitor tool
   * serves READ-ONLY status on http://127.0.0.1:PORT  (/health /status /summary /alert). Localhost only.
   * a failed run backs off (exponential) and is retried; after --max-failures in a row it stops and writes ALERT.md
-  * stop it with Ctrl-C / SIGTERM, a file named STOP in the state folder, or FD_KILL_SWITCH / FD_KILL_LIVE=1
+  * stop it with Ctrl-C / SIGTERM, a file named STOP in the state folder (one-shot: it is renamed to STOP.handled,
+    so the next start is not blocked), or FD_KILL_SWITCH / FD_KILL_LIVE=1
 
 It NEVER downloads data, accepts website terms, deletes anything, or changes the model. Refreshing the FracFocus
 data needs a person (the terms); drop the new files in place and this service picks them up on its own.
@@ -146,6 +147,9 @@ class Live:
             return None
 
     def _finalize_stop(self, reason):
+        stop_file = self.state_dir / "STOP"
+        if stop_file.exists():                            # one-shot: consume it so the next start is not blocked
+            stop_file.replace(self.state_dir / "STOP.handled")
         self._set("stopped_after_failures" if self._stop_reason == "too many failures" else "stopped")
         self.emit("stopped", reason=reason)
         self.write_status()
@@ -204,6 +208,7 @@ class Live:
             self._done_fp = fp                            # if the files changed mid-run, the next step re-runs
             self.status["last_run_finished"] = iso(self.clock())
             self.status["last_result"] = result
+            (self.out / "ALERT.md").unlink(missing_ok=True)   # our own "stopped after failures" note is now out of date
             self.emit("run_finished", **result)
             if result.get("watchdog_status") == "ALERT":
                 self.emit("alert", message="watchdog ALERT: see ALERT.md; a person must review", folder=str(self.out / "watch"))

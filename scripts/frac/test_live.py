@@ -201,6 +201,29 @@ class Control(Base):
         self.assertEqual(self.runs, [])
         self.assertEqual(live.snapshot()["state"], "stopped")
 
+    def test_stop_file_is_one_shot_so_a_restart_is_not_blocked(self):
+        live = self.live(debounce=0)
+        (live.state_dir / "STOP").write_text("")
+        self.assertEqual(live.step(), "stop")
+        self.assertFalse((live.state_dir / "STOP").exists())
+        self.assertTrue((live.state_dir / "STOP.handled").exists())
+        again = self.live(debounce=0)                                    # a fresh start in the same folder
+        self.assertEqual(again.step(), "continue")
+        self.assertEqual(len(self.runs), 1)
+
+    def test_a_successful_run_clears_the_old_stopped_after_failures_note(self):
+        live = self.live(debounce=0)
+        (live.out / "ALERT.md").write_text("# Frac live service stopped")
+        live.step()
+        self.assertFalse((live.out / "ALERT.md").exists())
+
+    def test_a_failed_run_leaves_an_existing_note_alone(self):
+        self.fail_next = [RuntimeError("x")]
+        live = self.live(debounce=0)
+        (live.out / "ALERT.md").write_text("# earlier")
+        live.step()
+        self.assertTrue((live.out / "ALERT.md").exists())
+
     def test_kill_switch_env_stops(self):
         live = self.live(debounce=0)
         os.environ["FD_KILL_LIVE"] = "1"
