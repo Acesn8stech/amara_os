@@ -235,20 +235,29 @@ def completion_rate(model, op, county):
 
 
 # --------------------------------------------------------------------------- forecast
-def hazard_weeks(sorted_lags, age, weeks):
-    """Share of the REMAINING-delay distribution falling in each week after as_of, or None if too thin."""
+def hazard_weeks(sorted_lags, age, weeks, shift=0):
+    """Share of the REMAINING-delay distribution falling in each forecast week, or None if too thin.
+
+    `age` is how long the permit had waited at the last date we KNOW it had not fracked. `shift` is how many
+    days have passed since then (the filing delay): a frac in that gap already happened, so those days are
+    skipped, but the permit is still conditioned on the survival we actually know (not fracked by `age`)."""
     n_rem = len(sorted_lags) - bisect.bisect_right(sorted_lags, age)
     if n_rem < 3:
         return None
+    base = age + shift
     out = []
     for k in range(weeks):
-        lo, hi = max(age + 1, age + 7 * k), age + 7 * (k + 1)       # remaining delay in [7k, 7k+7)
+        lo, hi = max(age + 1, base + 7 * k), base + 7 * (k + 1)     # remaining delay in [7k, 7k+7) after as_of
         out.append((bisect.bisect_left(sorted_lags, hi) - bisect.bisect_left(sorted_lags, lo)) / n_rem if hi > lo else 0.0)
     return out
 
 
-def forecast(permits, model, as_of, weeks=13, opts=None):
-    """Weekly water/proppant demand from permits with no frac yet as of `as_of`."""
+def forecast(permits, model, as_of, weeks=13, opts=None, lag_days=0):
+    """Weekly water/proppant demand from permits with no frac yet as of `as_of`.
+
+    lag_days: filing delay. Fracs started in the last `lag_days` are not yet visible, so (hazard timing only,
+    unless opts["lag_aware"] is False) each permit is conditioned on survival at as_of - lag_days and the days
+    already past are skipped, instead of treating just-fracked wells as still pending."""
     opts = opts or V1
     start = as_of
     buckets = [{"week_start": (start + timedelta(weeks=i)).isoformat(),
@@ -267,7 +276,8 @@ def forecast(permits, model, as_of, weeks=13, opts=None):
             continue
         # Condition on survival: this permit has already waited `age` days.
         if opts["timing"] == "hazard":
-            shares = hazard_weeks(lags, age, weeks)
+            shift = min(lag_days, age) if (lag_days and opts.get("lag_aware", True)) else 0
+            shares = hazard_weeks(lags, age - shift, weeks, shift)
             if shares is None:
                 notes["overdue_no_comparable_history"] += 1
                 continue
@@ -412,6 +422,10 @@ def compare_counties(permits, fracs, counties, weeks=13, from_date=None, metric=
         r2, _ = backtest(cp, joined, first, last, weeks, opts=V2, metric=metric, disclosure_lag_days=disclosure_lag_days)
         out[want] = {"permits": len(cp), "joined": len(joined), "match_rate": rep_["match_rate"],
                      "v1": quick_summary(r1), "v2": quick_summary(r2)}
+        if disclosure_lag_days:        # show what the lag-aware correction is worth
+            r3, _ = backtest(cp, joined, first, last, weeks, opts={**V2, "lag_aware": False}, metric=metric,
+                             disclosure_lag_days=disclosure_lag_days)
+            out[want]["v2_not_lag_aware"] = quick_summary(r3)
     return out
 
 
@@ -477,7 +491,7 @@ def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30, e
     while d <= last_as_of:
         known = d - lag                                   # the latest frac start the model can know about
         model = fit(joined, permits, known, opts)
-        buckets, notes = forecast(permits, model, d, weeks, opts)
+        buckets, notes = forecast(permits, model, d, weeks, opts, lag_days=disclosure_lag_days)
         act_w, act_p = actual_by_week(joined, d, weeks)
         coverage = None
         if metric == "water":

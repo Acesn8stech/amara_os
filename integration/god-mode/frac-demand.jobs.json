@@ -1,0 +1,17 @@
+{
+  "lane": "frac-demand",
+  "constitution": "docs/FRAC-DEMAND-PHASE0-SPEC.md",
+  "flow": "AMARA -> Hermes job -> backtest across counties -> summary numbers only on branch claude/frac-results",
+  "defaults": { "retries": 1, "backoff": "none", "timeout_minutes": 180, "log_to": "results_dir", "kill_switch_env": "FD_KILL_SWITCH" },
+  "jobs": [
+    {
+      "name": "frac_eval",
+      "schedule": "0 4 * * 1",
+      "tz": "America/Chicago",
+      "cmd": "npm run fd -- --permits \"$FD_PERMITS\" --frac \"$FD_FRAC\" --out \"$FD_OUT\" --publish",
+      "kill_switch_env": "FD_KILL_FRAC",
+      "note": "weekly backtest of the 13-week water and sand forecast across counties. Reads inputs built by hand from RRC DAF318 and the FracFocus CSV (FracFocus terms are accepted by a person, never by a job). Never downloads data. Publishes summary .json/.md only, never CSVs."
+    }
+  ],
+  "failure_policy": "tests fail -> stop before any backtest; a failed publish never deletes local results; results are ESTIMATE-labeled backtests, not live forecasts"
+}

@@ -75,3 +75,15 @@ Do not tune anything to make a gate pass. Report the numbers as printed, includi
 
 ## Tests
     python3 -m unittest scripts/frac/test_frac_forecast.py scripts/frac/adapters/test_adapters.py
+
+## One command for everything (use this)
+
+    python3 scripts/frac/run_suite.py --permits ~/frac-data/work/permits.csv --frac ~/frac-data/work/frac_v2.csv --out ~/frac-data/work/results --publish
+
+Runs the unit tests, then water and sand backtests for ten Permian counties, with and without an assumed 45-day
+filing delay, prints 5 wells per county to hand-check, and writes `SUMMARY.md` plus one JSON per run into the output
+folder. `--publish` pushes only those summary files to the branch `claude/frac-results` (never CSVs or zips), so the
+results can be read without pasting anything. Takes several minutes.
+
+Inside AMARA God Mode: `python3 scripts/frac/install_into_god_mode.py --target <god-mode> --apply` (dry run without
+`--apply`), then `npm run fd -- ...` with the same arguments. See `integration/god-mode/INSTALL.md`.

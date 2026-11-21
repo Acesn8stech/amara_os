@@ -413,10 +413,13 @@ class DisclosureLagAndProppant(unittest.TestCase):
         again = self.one(self.poison_window(45))
         self.assertNotEqual(base["pred_total"], again["pred_total"])
 
-    def test_delay_makes_just_fracked_wells_look_pending_so_the_forecast_rises(self):
+    def test_delay_makes_just_fracked_wells_look_pending_so_the_naive_forecast_rises(self):
         no_lag = self.one(self.joined)["pred_total"]
-        lagged = self.one(self.joined, disclosure_lag_days=60)["pred_total"]
-        self.assertGreater(lagged, no_lag)
+        results, _ = ff.backtest(self.p, self.joined, self.d, self.d, opts={**V2, "lag_aware": False},
+                                 disclosure_lag_days=60)
+        self.assertGreater(results[0]["pred_total"], no_lag)                  # the problem
+        aware = self.one(self.joined, disclosure_lag_days=60)["pred_total"]
+        self.assertLess(aware, results[0]["pred_total"])                      # the correction
 
     def test_baseline_uses_the_last_28_known_days(self):
         res = self.one(self.joined, disclosure_lag_days=45)
@@ -497,6 +500,79 @@ class DisclosureLagAndProppant(unittest.TestCase):
         b = ff.compare_counties(permits, fracs, ["REEVES"], from_date=date(2024, 1, 1),
                                 metric="proppant", disclosure_lag_days=60)
         self.assertNotEqual(a["REEVES"]["v2"], b["REEVES"]["v2"])
+
+
+class LagAware(unittest.TestCase):
+    def test_shift_skips_the_days_already_past_but_keeps_the_known_survival(self):
+        # survival conditioned at age 15 (remaining lags 20,30,40,50); 10 days have passed since then
+        shares = ff.hazard_weeks([10, 20, 30, 40, 50], age=15, weeks=3, shift=10)
+        self.assertEqual(shares, [0.25, 0.0, 0.25])           # lag 20 already happened; 30 and 40 fall in weeks 0 and 2
+
+    def test_shift_offsets_the_weeks_not_just_the_survival(self):
+        # age 15 with a 5-day gap: remaining lags 20,30,40,50 land in forecast weeks 0,1,2 (delays 20 / 27+ / 34+)
+        self.assertEqual(ff.hazard_weeks([10, 20, 30, 40, 50], age=15, weeks=3, shift=5), [0.25, 0.25, 0.25])
+
+    def test_forecast_conditions_on_survival_at_the_last_known_date(self):
+        """Hand-computed: permit is 25 days old, filing delay 10, so survival is conditioned at day 15."""
+        lags = [10, 20, 30, 40, 50, 60]                       # lags > 15: 20,30,40,50,60  ->  n = 5
+        model = {"lags": {(None, None): lags}, "water": {}, "prop": {}, "water_well": {(None, None): [1000.0] * 5},
+                 "prop_well": {}, "completion": {}, "seen_fracs": set()}
+        permit = {"api": "4238999222", "permit_date": date(2024, 6, 1) - timedelta(days=25), "operator": "X",
+                  "county": "Y", "lateral_ft": None}
+        buckets, _ = ff.forecast({"p": permit}, model, date(2024, 6, 1), weeks=3, opts=V2, lag_days=10)
+        # week 0 covers delays [26, 33): the 30-day lag; week 2 covers [40, 47): the 40-day lag; each 1 of 5 = 0.2
+        self.assertAlmostEqual(buckets[0]["water_gal"], 200.0)
+        self.assertAlmostEqual(buckets[1]["water_gal"], 0.0)
+        self.assertAlmostEqual(buckets[2]["water_gal"], 200.0)
+        # conditioning on age 25 instead (a bug) would give 4 comparable lags and 250 per placed week
+        naive, _ = ff.forecast({"p": permit}, model, date(2024, 6, 1), weeks=3, opts={**V2, "lag_aware": False}, lag_days=10)
+        self.assertNotAlmostEqual(naive[0]["water_gal"], buckets[0]["water_gal"])
+
+    def test_zero_shift_matches_the_old_behaviour(self):
+        lags = [10, 20, 30, 40, 50]
+        self.assertEqual(ff.hazard_weeks(lags, 15, 4), ff.hazard_weeks(lags, 15, 4, shift=0))
+
+    def test_lag_aware_forecast_is_lower_than_naive_when_fracs_are_hidden(self):
+        p, f, joined, _ = prepared()
+        d = date(2024, 6, 1)
+        model = ff.fit(joined, p, d - timedelta(days=60), V2)
+        aware, _ = ff.forecast(p, model, d, opts=V2, lag_days=60)
+        naive, _ = ff.forecast(p, model, d, opts={**V2, "lag_aware": False}, lag_days=60)
+        self.assertLess(sum(b["water_gal"] for b in aware), sum(b["water_gal"] for b in naive))
+
+    def test_lag_aware_cuts_the_over_forecast_bias_in_a_backtest(self):
+        p, f, joined, _ = prepared()
+        first, last = date(2023, 1, 1), date(2024, 6, 30)
+        aware, _ = ff.backtest(p, joined, first, last, opts=V2, disclosure_lag_days=60)
+        naive, _ = ff.backtest(p, joined, first, last, opts={**V2, "lag_aware": False}, disclosure_lag_days=60)
+        b_aware = abs(ff.quick_summary(aware)["median_13wk_total_bias"])
+        b_naive = abs(ff.quick_summary(naive)["median_13wk_total_bias"])
+        self.assertLess(b_aware, b_naive)
+
+    def test_permit_issued_inside_the_lag_window_does_not_break(self):
+        p, f, joined, _ = prepared()
+        d = date(2024, 6, 1)
+        model = ff.fit(joined, p, d - timedelta(days=45), V2)
+        fresh = {"api": "4238999111", "permit_date": d - timedelta(days=10), "operator": "ALPHA OIL",
+                 "county": "REEVES", "lateral_ft": 10000}
+        buckets, _ = ff.forecast({"x": fresh}, model, d, opts=V2, lag_days=45)
+        self.assertTrue(all(b["permits"] >= 0 for b in buckets))
+        self.assertLessEqual(sum(b["permits"] for b in buckets), 1.0 + 1e-9)
+
+    def test_lag_zero_is_unchanged_by_the_new_argument(self):
+        p, f, joined, _ = prepared()
+        d = date(2024, 6, 1)
+        model = ff.fit(joined, p, d, V2)
+        self.assertEqual(ff.forecast(p, model, d, opts=V2), ff.forecast(p, model, d, opts=V2, lag_days=0))
+
+    def test_compare_counties_shows_the_not_lag_aware_run_only_when_there_is_a_lag(self):
+        permits, _ = ff.clean_permits(world()[0])
+        fracs, _ = ff.clean_fracs(world()[1])
+        none = ff.compare_counties(permits, fracs, ["REEVES"], from_date=date(2024, 1, 1))
+        some = ff.compare_counties(permits, fracs, ["REEVES"], from_date=date(2024, 1, 1), disclosure_lag_days=45)
+        self.assertNotIn("v2_not_lag_aware", none["REEVES"])
+        self.assertIn("v2_not_lag_aware", some["REEVES"])
+        self.assertNotEqual(some["REEVES"]["v2"], some["REEVES"]["v2_not_lag_aware"])
 
 
 class CompareCounties(unittest.TestCase):

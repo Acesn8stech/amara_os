@@ -197,3 +197,27 @@ Ten Permian counties, v1 vs v2 (v2 designed on Reeves only, so the other nine ar
   weekly error is at or above 100% of volume. Do not trust the forecast where the permit-frac join is poor.
 - Limits: assumes every frac is known the day it starts. FracFocus filings arrive later; `--disclosure-lag-days`
   tests this (assumed lag, not measured). Water only until `--metric proppant` results are reviewed.
+
+## 14. Filing delay and sand results (2026-11-21), measured BEFORE the lag-aware fix
+
+Seven counties (Reeves, Loving, Midland, Martin, Howard, Upton, Culberson), v2 vs trailing-average baseline.
+
+- Assumed 45-day filing delay, water, 13-week total median abs error: Reeves .231/.262, Loving .234/.323,
+  Midland .201/.231, Martin .180/.309, Howard .320/.349, Upton .172/.371, Culberson .252/.442. v2 better in 7 of 7,
+  and better at turning points in 7 of 7. But the model over-forecast by +4% to +22% because wells that had already
+  fracked (but were not yet filed) still looked pending. Weekly accuracy slipped to a tie or slightly worse.
+- Sand (recorded pounds), no delay: 13-week error v2/baseline: Reeves .251/.248 (tie), Loving .195/.306,
+  Midland .148/.335, Martin .210/.333, Howard .225/.335, Upton .181/.332, Culberson .299/.508. Better in 6 of 7
+  (one tie); better at turning points in 7 of 7; better weekly in 5 of 7. Median bias between -9% and +3%.
+- Fix added afterwards: the forecast now conditions each permit on "not fracked as of the last date we can know"
+  and skips the days already past (`hazard_weeks(..., shift)`, `opts["lag_aware"]`). `--disclosure-lag-days N`
+  reports it against the naive version as `v2_not_lag_aware`. NOT yet re-measured on real data.
+- The real FracFocus filing delay is unmeasured; 45 days is an assumption.
+
+## 15. Tooling
+
+- `scripts/frac/run_suite.py`: one command runs the tests and all backtests and writes `SUMMARY.md`; `--publish`
+  pushes only summary files to `claude/frac-results`.
+- `scripts/frac/install_into_god_mode.py` + `integration/god-mode/`: installs this into AMARA God Mode (npm
+  scripts `fd`, `fd:forecast`, `test:frac`, and a Hermes lane `hermes/frac-demand.jobs.json`) without touching the
+  globe or UI.
