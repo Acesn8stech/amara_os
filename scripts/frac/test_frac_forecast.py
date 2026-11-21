@@ -259,6 +259,29 @@ class CLI(unittest.TestCase):
         self.assertEqual(data["basis"], "ESTIMATE")
         self.assertEqual(data["join"]["permits"], len(permits))
 
+    def test_absurd_date_range_is_refused_not_looped(self):
+        permits, fracs = world()
+        fracs[0]["frac_start"] = "3012-01-01"        # one bad row used to stretch the backtest to the year 3012
+        fracs[0]["api"] = permits[0]["api"] + "0000"
+        import io, contextlib
+        p = self._write(permits, "p.csv"); f = self._write(fracs, "f.csv")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = ff.main(["backtest", "--permits", p, "--frac", f])
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(out.getvalue())["status"], "RANGE_TOO_LARGE")
+
+    def test_from_and_to_dates_bound_the_backtest(self):
+        permits, fracs = world()
+        import io, contextlib
+        p = self._write(permits, "p.csv"); f = self._write(fracs, "f.csv")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            ff.main(["backtest", "--permits", p, "--frac", f, "--from-date", "2024-01-01", "--to-date", "2024-06-30"])
+        windows = json.loads(out.getvalue())["windows"]
+        self.assertTrue(windows)
+        self.assertTrue(all("2024-01-01" <= w["as_of"] <= "2024-06-30" for w in windows))
+
     def test_not_enough_history_exits_2(self):
         permits, fracs = world(months=3)
         import io, contextlib

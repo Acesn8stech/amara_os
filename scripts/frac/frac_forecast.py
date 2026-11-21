@@ -28,6 +28,7 @@ from datetime import date, timedelta
 MIN_GROUP_N = 5          # smallest sample used for an operator/county estimate
 MATURE_DAYS = 540        # a permit older than this with no frac counts as "not completed"
 MAX_PERMIT_AGE = 540     # permits older than this are not forecast
+MAX_BACKTEST_WINDOWS = 400   # refuse absurd ranges (e.g. one bad date in the year 3012)
 UNKNOWN = "UNKNOWN"
 
 
@@ -336,6 +337,8 @@ def main(argv=None):
         s.add_argument("--county")
         s.add_argument("--weeks", type=int, default=13)
     sub.choices["forecast"].add_argument("--as-of", required=True)
+    sub.choices["backtest"].add_argument("--from-date", help="first as-of date (YYYY-MM-DD); default: 1 year after the first frac")
+    sub.choices["backtest"].add_argument("--to-date", help="last as-of date (YYYY-MM-DD); default: last frac minus the horizon")
     args = ap.parse_args(argv)
 
     permits, joined, report = _load(args)
@@ -355,6 +358,17 @@ def main(argv=None):
 
     first = min(r["frac_start"] for r in joined) + timedelta(days=365)
     last = max(r["frac_start"] for r in joined) - timedelta(weeks=args.weeks)
+    for flag, value in (("--from-date", args.from_date), ("--to-date", args.to_date)):
+        if value and not parse_date(value):
+            sys.exit(f"{flag} must be YYYY-MM-DD")
+    if args.from_date:
+        first = max(first, parse_date(args.from_date))
+    if args.to_date:
+        last = min(last, parse_date(args.to_date))
+    if first <= last and (last - first).days / 30 > MAX_BACKTEST_WINDOWS:
+        print(json.dumps({"status": "RANGE_TOO_LARGE", "first": first.isoformat(), "last": last.isoformat(),
+                          "hint": "check the data for impossible dates, or pass --from-date/--to-date"}))
+        return 2
     if first > last:
         print(json.dumps({"status": "NOT_ENOUGH_HISTORY",
                           "need": "at least ~1 year of fracs plus the forecast horizon"}))

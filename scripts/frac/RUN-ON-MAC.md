@@ -25,9 +25,17 @@ Per year: how many Texas jobs, how many have an ingredient mass at all, how many
 row with a mass, and how many have a sand-like ingredient name with a mass. A big gap between the last two
 means proppant is recorded under a purpose the matcher does not recognize. Paste the result to Claude.
 
+## 3c. Re-run the diagnostic (it now also tests the percent method against jobs that have both numbers)
+    python3 scripts/frac/adapters/fracfocus_to_frac.py --zip ~/frac-data/fracfocus/FracFocusCSV.zip --diagnose
+Look at "percent_method_calibration": the median of "estimate_divided_by_recorded_mass" near 1.0 with a
+tight p25-p75 means the percent estimate is trustworthy. Do NOT turn it on until Claude has read this.
+
 ## 4. Build frac.csv (streams the zip, never extracts it; Texas only)
     python3 scripts/frac/adapters/fracfocus_to_frac.py --zip ~/frac-data/fracfocus/FracFocusCSV.zip --output ~/frac-data/work/frac.csv
 It prints which job-key column it used. If it stops on a header mismatch, tell Claude.
+Jobs dated before 2000 or after next year are rejected (entry errors such as 1955 or 3012).
+Optional, ONLY after the calibration check passes: add `--derive-proppant-from-percent` to estimate
+proppant where pounds are blank (labeled DERIVED in the proppant_basis column).
 
 ## 5. Gate G1: check 10 joined wells by hand
     python3 scripts/frac/sample_join.py --permits ~/frac-data/work/permits.csv --frac ~/frac-data/work/frac.csv --county REEVES
@@ -35,7 +43,7 @@ Look 3 or more of them up (RRC drilling permit query by API, FracFocus "Find a W
 confirm date, operator and volumes match.
 
 ## 6. Backtest (gates G2/G3) and a live forecast
-    python3 scripts/frac/frac_forecast.py backtest --permits ~/frac-data/work/permits.csv --frac ~/frac-data/work/frac.csv --county REEVES
+    python3 scripts/frac/frac_forecast.py backtest --permits ~/frac-data/work/permits.csv --frac ~/frac-data/work/frac.csv --county REEVES --from-date 2016-01-01
     python3 scripts/frac/frac_forecast.py forecast --permits ~/frac-data/work/permits.csv --frac ~/frac-data/work/frac.csv --as-of 2026-11-21 --county REEVES
 Do not tune anything to make a gate pass. Report the numbers as printed, including "not good enough".
 

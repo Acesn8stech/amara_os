@@ -118,3 +118,19 @@ stop and report at each gate.
   are built from the manual and dictionary, NOT from the real files. The runtime sanity gate,
   the header check and the 10-row hand check (`scripts/frac/sample_join.py`) are what confirm
   them on real data. Run guide: `scripts/frac/RUN-ON-MAC.md`.
+
+## 9. First real FracFocus run (2026-11-21): what the data showed
+
+- 124,168 Texas jobs. Water volume is present for nearly every job from 2013 on. 2011-2012 are mostly
+  header-only (FracFocus 1.0 format): about 18,000 jobs with no ingredients and often no water.
+- Proppant recorded as pounds (MassIngredient on a proppant row) exists for only ~51% of the ~105,700 jobs
+  from 2013 on, though ~86% have a proppant row. Pound coverage FELL from ~79% (2014) to ~39% (2025-26).
+  A forecast built from jobs with pounds therefore leans on older jobs. Treat recent sand estimates as lower
+  confidence, and report coverage next to every proppant number.
+- The name matcher was missing "Propping Agent" (service-company wording); fixed. The remaining gap is
+  missing mass, not missing names.
+- Optional fallback: estimate pounds from PercentHFJob and the base water mass (labeled DERIVED, runs low if
+  the water is denser than fresh). Off by default until the calibration in `--diagnose` shows it tracks the
+  recorded pounds.
+- Entry-error dates (1955, 3012) exist; the adapter rejects years outside 2000..next year and the backtest
+  refuses ranges over 400 windows so one bad date cannot hang it.

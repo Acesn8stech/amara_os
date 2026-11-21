@@ -279,6 +279,84 @@ class Diagnose(unittest.TestCase):
         self.assertEqual(res["top_single_value_purposes_containing_propp"], {"Proppant": 2})
 
 
+HEADER2 = HEADER + ["PercentHFJob"]
+
+
+def row2(key, start, api, water, purpose, ingredient, mass, pct, state="Texas", county="Reeves", op="OP"):
+    r = row(key, start, api, state, county, op, water, purpose, mass)
+    r[12] = ingredient
+    return r + [pct]
+
+
+class DateSanityAndPercentMethod(unittest.TestCase):
+    def run_convert(self, rows_, **kw):
+        out = str(Path(tempfile.mkdtemp()) / "frac.csv")
+        res = ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), out, **kw)
+        with open(out) as handle:
+            return res, {r["api"]: r for r in csv.DictReader(handle)}
+
+    def test_implausible_years_are_rejected_and_counted(self):
+        rows_ = [row2("a", "5/1/1955", "42389470010000", "1000000", "Proppant", "Sand", "10", ""),
+                 row2("b", "1/1/3012", "42389470020000", "1000000", "Proppant", "Sand", "10", ""),
+                 row2("c", "6/1/2001", "42389470030000", "1000000", "Proppant", "Sand", "10", ""),
+                 row2("d", "6/1/2022", "42389470040000", "1000000", "Proppant", "Sand", "10", "")]
+        res, out = self.run_convert(rows_)
+        self.assertEqual(set(out), {"42389470030000", "42389470040000"})      # 2001 kept, 1955 and 3012 dropped
+        self.assertEqual(res["stats"]["rejected_implausible_start_date"], 2)
+
+    def test_percent_method_only_when_asked_and_labeled(self):
+        rows_ = [row2("p", "6/1/2022", "42389470100000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("p", "6/1/2022", "42389470100000", "5000000", "Proppant", "Silica", "", "10")]
+        res, out = self.run_convert(rows_)                                   # off by default
+        self.assertEqual(out["42389470100000"]["proppant_lb"], "")
+        self.assertEqual(out["42389470100000"]["proppant_basis"], "")
+        res, out = self.run_convert(rows_, derive=True)
+        r = out["42389470100000"]
+        self.assertAlmostEqual(float(r["proppant_lb"]), 5000000 * 8.34 * 10 / 80, places=0)
+        self.assertTrue(r["proppant_basis"].startswith("DERIVED"))
+        self.assertEqual(res["stats"]["proppant_derived_from_percent"], 1)
+
+    def test_recorded_mass_beats_derived_estimate(self):
+        rows_ = [row2("q", "6/1/2022", "42389470200000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("q", "6/1/2022", "42389470200000", "5000000", "Proppant", "Silica", "4000000", "10")]
+        res, out = self.run_convert(rows_, derive=True)
+        r = out["42389470200000"]
+        self.assertEqual(float(r["proppant_lb"]), 4000000.0)
+        self.assertTrue(r["proppant_basis"].startswith("RECORD"))
+        self.assertNotIn("proppant_derived_from_percent", res["stats"])
+
+    def test_percent_method_needs_water_percent_and_volume(self):
+        rows_ = [row2("n1", "6/1/2022", "42389470300000", "5000000", "Proppant", "Silica", "", "10"),     # no water row
+                 row2("n2", "6/1/2022", "42389470310000", "", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("n2", "6/1/2022", "42389470310000", "", "Proppant", "Silica", "", "10")]            # no water volume
+        _, out = self.run_convert(rows_, derive=True)
+        self.assertEqual(out["42389470300000"]["proppant_lb"], "")
+        self.assertEqual(out["42389470310000"]["proppant_lb"], "")
+
+    def test_derive_flag_without_percent_column_stops(self):
+        with self.assertRaises(SystemExit) as cm:
+            ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER, ROWS)}),
+                        str(Path(tempfile.mkdtemp()) / "x.csv"), derive=True)
+        self.assertIn("PercentHFJob", str(cm.exception))
+
+    def test_water_name_detection(self):
+        for n in ("Water", "water", "Fresh Water", "Produced Water", "Water (Including Mix Water Supplied by Client)"):
+            self.assertTrue(ffz.is_water_name(n), n)
+        for n in ("Crystalline Silica", "Hydrochloric acid", "", None):
+            self.assertFalse(ffz.is_water_name(n), n)
+
+    def test_diagnose_reports_percent_method_calibration(self):
+        rows_ = [row2("c1", "6/1/2022", "42389470400000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("c1", "6/1/2022", "42389470400000", "5000000", "Proppant", "Silica", "5000000", "10"),
+                 row2("c2", "6/1/2022", "42389470410000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("c2", "6/1/2022", "42389470410000", "5000000", "Proppant", "Silica", "", "10")]   # derivable, no mass
+        res = ffz.diagnose(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}))
+        cal = res["percent_method_calibration"]
+        self.assertEqual(cal["jobs_with_both_recorded_mass_and_percent_estimate"], 1)
+        self.assertAlmostEqual(cal["estimate_divided_by_recorded_mass"]["median"], 5000000 * 8.34 * 10 / 80 / 5000000, places=2)
+        self.assertEqual(res["by_year"]["2022"]["matched_no_mass_but_derivable_from_percent"], 1)
+
+
 class EndToEndWithCore(unittest.TestCase):
     def test_adapter_output_joins_in_the_core(self):
         """8-digit RRC API and 14-digit FracFocus API must meet at the same well."""
