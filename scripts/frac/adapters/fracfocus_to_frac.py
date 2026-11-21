@@ -31,6 +31,8 @@ JOB_KEY_CANDIDATES = ["UploadKey", "DisclosureKey", "DisclosureId"]
 DATE_FORMATS = ["%Y-%m-%d", "%m/%d/%Y", "%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S",
                 "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"]
 FIELDS = ["api", "frac_start", "operator", "water_gal", "proppant_lb", "proppant_basis"]
+SAND_WORDS = ("silica", "quartz", "sand", "ceramic", "bauxite", "silicon dioxide", "sio2")
+BASIS_BY_NAME = "RECORD: sand-named ingredient mass >= 100,000 lb (purpose not labeled proppant)"
 MAX_DERIVED_LB_PER_GAL = 10.0   # derived proppant above this per gallon of base water is implausible
 BIG_SAND_LB = 100_000           # a single sand-like ingredient this heavy is proppant-scale, not a trace
 WATER_LB_PER_GAL = 8.34       # fresh water; produced/brine is denser, so derived figures run LOW
@@ -74,7 +76,7 @@ NOT_PROPPANT_WORDS = ("suspend", "transport", "carry", "carrier", "binder", "act
 
 def is_proppant(purpose):
     for token in (purpose or "").lower().split(","):
-        if "propp" in token and not any(w in token for w in NOT_PROPPANT_WORDS):
+        if ("propp" in token or "propant" in token) and not any(w in token for w in NOT_PROPPANT_WORDS):
             return True
     return False
 
@@ -130,14 +132,18 @@ def aggregate(rows, header, job_key, state="TEXAS", county=None, stats=None, job
                 "operator": g(row, "OperatorName").strip(),
                 "water": num(g(row, "TotalBaseWaterVolume")),
                 "prop": 0.0, "prop_rows": 0, "prop_with_mass": 0,
-                "prop_pct": 0.0, "water_pct": 0.0,
+                "prop_pct": 0.0, "water_pct": 0.0, "sand_name_total": 0.0,
             }
         elif num(g(row, "TotalBaseWaterVolume")) != job["water"]:
             stats["job_water_conflicts"] += 1   # same job, different job-level value; first kept
         pct = num(g(row, "PercentHFJob"))
         pct = pct if pct is not None and pct > 0 else 0.0
-        if is_water_name(g(row, "IngredientName")):
+        ing = g(row, "IngredientName")
+        if is_water_name(ing):
             job["water_pct"] += pct
+        ing_mass = num(g(row, "MassIngredient"))
+        if ing_mass is not None and ing_mass >= BIG_SAND_LB and any(w in ing.lower() for w in SAND_WORDS):
+            job["sand_name_total"] += ing_mass   # proppant-scale sand identified by what it IS, not its label
         if is_proppant(g(row, "Purpose")):
             job["prop_pct"] += pct
             job["prop_rows"] += 1
@@ -159,7 +165,8 @@ def derive_proppant(water_gal, prop_pct, water_pct):
     return None
 
 
-def finalize(jobs, stats, derive=False, max_year=None, max_lb_per_gal=MAX_DERIVED_LB_PER_GAL):
+def finalize(jobs, stats, derive=False, max_year=None, max_lb_per_gal=MAX_DERIVED_LB_PER_GAL,
+             sand_by_name=False):
     out = []
     for job in jobs.values():
         start = parse_date(job["start_raw"])
@@ -175,6 +182,13 @@ def finalize(jobs, stats, derive=False, max_year=None, max_lb_per_gal=MAX_DERIVE
         water = job["water"] if job["water"] and job["water"] > 0 else None
         prop = job["prop"] if job["prop_with_mass"] else None   # blank, never 0, when unknown
         basis = BASIS_RECORD if prop is not None else ""
+        if prop is None and sand_by_name and job["sand_name_total"] > 0:
+            named = job["sand_name_total"]
+            if water and named / water > max_lb_per_gal:
+                stats["rejected_implausible_sand_named_proppant"] += 1
+            else:
+                prop, basis = named, BASIS_BY_NAME
+                stats["proppant_from_sand_named_ingredient"] += 1
         if prop is None and derive:
             prop = derive_proppant(water, job["prop_pct"], job["water_pct"])
             if prop is not None and prop / water > max_lb_per_gal:
@@ -206,8 +220,6 @@ def list_purposes(zf, member_limit=None):
                     counts[row[i]] += 1
     return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
 
-
-SAND_WORDS = ("silica", "quartz", "sand", "ceramic", "bauxite")
 
 
 def _pcts(values):
@@ -249,7 +261,7 @@ def diagnose(zip_path, county=None, job_key=None, top=25, brief=False):
                                            "water": (num(g(row, "TotalBaseWaterVolume")) or 0) > 0,
                                            "water_gal": num(g(row, "TotalBaseWaterVolume")) or 0.0,
                                            "prop_pct": 0.0, "water_pct": 0.0, "prop_mass": 0.0,
-                                           "big_unmatched": False}
+                                           "big_unmatched": False, "sand_name_total": 0.0}
                     job["rows"] += 1
                     pct = num(g(row, "PercentHFJob"))
                     pct = pct if pct is not None and pct > 0 else 0.0
@@ -271,21 +283,31 @@ def diagnose(zip_path, county=None, job_key=None, top=25, brief=False):
                     if any(w in name for w in SAND_WORDS):
                         job["sand_name"] = True
                         job["sand_mass"] |= has_mass
+                        if has_mass and mass >= BIG_SAND_LB:
+                            job["sand_name_total"] += mass
                         if has_mass and mass >= BIG_SAND_LB and not is_proppant(purpose):
                             job["big_unmatched"] = True            # proppant-scale sand under another label
                             unmatched_big_sand[purpose.strip()[:70] or "(blank)"] += 1
     by_year = defaultdict(lambda: defaultdict(int))
-    ratios, lbgal_recorded, lbgal_derived = [], [], []
+    ratios, lbgal_recorded, lbgal_derived, ratios_name = [], [], [], []
     for job in jobs.values():
         est = derive_proppant(job["water_gal"], job["prop_pct"], job["water_pct"])
         if est is not None and job["prop_mass"] > 0:
             ratios.append(est / job["prop_mass"])          # estimate / recorded, jobs having both
+        if job["sand_name_total"] > 0 and job["prop_mass"] > 0:
+            ratios_name.append(job["sand_name_total"] / job["prop_mass"])   # name rule / purpose-labeled mass
         if job["water_gal"] > 0 and job["prop_mass"] > 0:
             lbgal_recorded.append(job["prop_mass"] / job["water_gal"])
         elif est is not None and job["water_gal"] > 0:
             lbgal_derived.append(est / job["water_gal"])
         y = by_year[job["year"]]
         y["matched_no_mass_but_derivable_from_percent"] += int(job["matched"] and not job["matched_mass"] and est is not None)
+        has_rec = job["matched_mass"]
+        by_name = (not has_rec) and job["sand_name_total"] > 0
+        by_pct = (not has_rec) and (not by_name) and est is not None
+        y["cover_recorded_by_purpose"] += int(has_rec)
+        y["cover_added_by_sand_name_rule"] += int(by_name)
+        y["cover_added_by_percent_only"] += int(by_pct)
         y["jobs"] += 1
         y["have_water"] += job["water"]
         y["any_ingredient_mass"] += job["any_mass"]
@@ -309,6 +331,9 @@ def diagnose(zip_path, county=None, job_key=None, top=25, brief=False):
         out = dict(agg)
         out["share_with_water"] = round(agg["have_water"] / total, 3)
         out["share_proppant_pounds_recorded"] = round(agg["proppant_purpose_match_with_mass"] / total, 3)
+        out["share_all_three_methods"] = round(
+            (agg["cover_recorded_by_purpose"] + agg["cover_added_by_sand_name_rule"]
+             + agg["cover_added_by_percent_only"]) / total, 3)
         out["share_recorded_plus_percent_derivable"] = round(
             (agg["proppant_purpose_match_with_mass"] + agg["matched_no_mass_but_derivable_from_percent"]) / total, 3)
         return out
@@ -321,6 +346,7 @@ def diagnose(zip_path, county=None, job_key=None, top=25, brief=False):
                 "jobs_last_3_years": window(this_year - 2),
                 "lb_proppant_per_gal_base_water": {"recorded_jobs": _pcts(lbgal_recorded),
                                                    "derived_only_jobs": _pcts(lbgal_derived)},
+                "sand_name_rule_over_purpose_labeled_mass": _pcts(ratios_name),
                 "where_large_sand_hides_when_not_labeled_proppant": dict(
                     sorted(unmatched_big_sand.items(), key=lambda kv: -kv[1])[:15]),
                 "how_to_read": "If derived_only_jobs looks like recorded_jobs, the percent method is behaving. "
@@ -328,6 +354,7 @@ def diagnose(zip_path, county=None, job_key=None, top=25, brief=False):
     return {"jobs_total": len(jobs),
             "lb_proppant_per_gal_base_water": {"recorded_jobs": _pcts(lbgal_recorded),
                                                "derived_only_jobs": _pcts(lbgal_derived)},
+            "sand_name_rule_over_purpose_labeled_mass": _pcts(ratios_name),
             "where_large_sand_hides_when_not_labeled_proppant": dict(
                 sorted(unmatched_big_sand.items(), key=lambda kv: -kv[1])[:15]),
             "percent_method_calibration": {
@@ -345,7 +372,7 @@ def diagnose(zip_path, county=None, job_key=None, top=25, brief=False):
 
 
 def convert(zip_path, out_path, county=None, job_key=None, derive=False,
-            max_lb_per_gal=MAX_DERIVED_LB_PER_GAL):
+            max_lb_per_gal=MAX_DERIVED_LB_PER_GAL, sand_by_name=False):
     stats, jobs = defaultdict(int), {}
     with zipfile.ZipFile(zip_path) as zf:
         members = registry_members(zf)
@@ -364,13 +391,13 @@ def convert(zip_path, out_path, county=None, job_key=None, derive=False,
                           stats=stats, jobs=jobs)
             stats["members_read"] += 1
     rows = finalize(jobs, stats, derive=derive, max_year=date.today().year + 1,
-                    max_lb_per_gal=max_lb_per_gal)
+                    max_lb_per_gal=max_lb_per_gal, sand_by_name=sand_by_name)
     with open(out_path, "w", newline="", encoding="utf-8") as out:
         writer = csv.DictWriter(out, fieldnames=FIELDS)
         writer.writeheader()
         writer.writerows(rows)
     return {"jobs_written": len(rows), "job_key_used": used_key, "county_filter": county,
-            "derive_proppant_from_percent": derive,
+            "derive_proppant_from_percent": derive, "sand_by_name": sand_by_name,
             "stats": dict(stats)}
 
 
@@ -384,6 +411,10 @@ def main(argv=None):
     ap.add_argument("--derive-proppant-from-percent", action="store_true",
                     help="where MassIngredient is blank, ESTIMATE proppant from percent of job fluid "
                          "(labeled DERIVED in proppant_basis). Check --diagnose calibration first.")
+    ap.add_argument("--sand-by-name", action="store_true",
+                    help="where no proppant-labeled mass exists, use sand-like ingredients (silica, quartz, "
+                         "ceramic...) of >= 100,000 lb regardless of label (basis column says so). "
+                         "Check the --diagnose --brief ratio first.")
     ap.add_argument("--max-derived-lb-per-gal", type=float, default=MAX_DERIVED_LB_PER_GAL,
                     help="discard DERIVED proppant above this many lb per gallon of base water (default 10)")
     ap.add_argument("--brief", action="store_true", help="with --diagnose: print only the key findings")
@@ -400,7 +431,8 @@ def main(argv=None):
     if not args.output:
         ap.error("--output is required")
     print(json.dumps(convert(args.zip, args.output, args.county, args.job_key,
-                             args.derive_proppant_from_percent, args.max_derived_lb_per_gal), indent=1))
+                             args.derive_proppant_from_percent, args.max_derived_lb_per_gal,
+                             args.sand_by_name), indent=1))
     return 0
 
 

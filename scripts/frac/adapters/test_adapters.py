@@ -405,6 +405,87 @@ class PlausibilityAndBrief(unittest.TestCase):
         self.assertAlmostEqual(d["derived_only_jobs"]["median"], 8.34 * 10 / 80, places=2)
 
 
+class SandByName(unittest.TestCase):
+    def convert(self, rows_, **kw):
+        out = str(Path(tempfile.mkdtemp()) / "frac.csv")
+        res = ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), out, **kw)
+        with open(out) as handle:
+            return res, {r["api"]: r for r in csv.DictReader(handle)}
+
+    ROWS_HIDDEN = [row2("s", "6/1/2023", "42389490010000", "5000000", "Ingredient Container Purpose",
+                        "Crystalline silica, quartz", "6000000", "10")]
+
+    def test_typo_propant_counts(self):
+        self.assertTrue(ffz.is_proppant("Propant"))
+        self.assertFalse(ffz.is_proppant("Propane gas"))
+
+    def test_off_by_default(self):
+        _, out = self.convert(self.ROWS_HIDDEN)
+        self.assertEqual(out["42389490010000"]["proppant_lb"], "")
+
+    def test_hidden_sand_counted_by_name_and_labeled(self):
+        res, out = self.convert(self.ROWS_HIDDEN, sand_by_name=True)
+        r = out["42389490010000"]
+        self.assertEqual(float(r["proppant_lb"]), 6000000.0)
+        self.assertTrue(r["proppant_basis"].startswith("RECORD: sand-named"))
+        self.assertEqual(res["stats"]["proppant_from_sand_named_ingredient"], 1)
+
+    def test_trace_silica_below_floor_is_ignored(self):
+        rows_ = [row2("t", "6/1/2023", "42389490020000", "5000000", "Breaker", "Crystalline silica", "50", "0.0001")]
+        _, out = self.convert(rows_, sand_by_name=True)
+        self.assertEqual(out["42389490020000"]["proppant_lb"], "")
+
+    def test_silicon_dioxide_and_ceramic_names_count(self):
+        rows_ = [row2("u", "6/1/2023", "42389490030000", "5000000", "Other Ingredient(s)", "Silicon Dioxide (SiO2)", "3000000", ""),
+                 row2("v", "6/1/2023", "42389490040000", "5000000", "See Trade Name(s) List", "Ceramic proppant", "2000000", "")]
+        _, out = self.convert(rows_, sand_by_name=True)
+        self.assertEqual(float(out["42389490030000"]["proppant_lb"]), 3000000.0)
+        self.assertEqual(float(out["42389490040000"]["proppant_lb"]), 2000000.0)
+
+    def test_purpose_labeled_mass_is_preferred_over_name_rule(self):
+        rows_ = [row2("w", "6/1/2023", "42389490050000", "5000000", "Proppant", "Silica", "4000000", ""),
+                 row2("w", "6/1/2023", "42389490050000", "5000000", "Other", "Sand", "9000000", "")]
+        _, out = self.convert(rows_, sand_by_name=True)
+        r = out["42389490050000"]
+        self.assertEqual(float(r["proppant_lb"]), 4000000.0)
+        self.assertTrue(r["proppant_basis"].startswith("RECORD: sum of MassIngredient"))
+
+    def test_name_rule_beats_percent_estimate(self):
+        rows_ = [row2("x", "6/1/2023", "42389490060000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("x", "6/1/2023", "42389490060000", "5000000", "Proppant", "Silica", "", "10"),
+                 row2("x", "6/1/2023", "42389490060000", "5000000", "Sand", "Quartz", "5500000", "")]
+        _, out = self.convert(rows_, sand_by_name=True, derive=True)
+        r = out["42389490060000"]
+        self.assertEqual(float(r["proppant_lb"]), 5500000.0)
+        self.assertTrue(r["proppant_basis"].startswith("RECORD: sand-named"))
+
+    def test_implausible_sand_named_mass_is_rejected(self):
+        rows_ = [row2("y", "6/1/2023", "42389490070000", "100000", "Sand", "Quartz", "9000000", "")]   # 90 lb/gal
+        res, out = self.convert(rows_, sand_by_name=True)
+        self.assertEqual(out["42389490070000"]["proppant_lb"], "")
+        self.assertEqual(res["stats"]["rejected_implausible_sand_named_proppant"], 1)
+
+    def test_brief_diagnose_validates_name_rule_against_labeled_mass(self):
+        rows_ = [row2("z", "6/1/2023", "42389490080000", "5000000", "Proppant", "Silica", "4000000", "10"),
+                 row2("z", "6/1/2023", "42389490080000", "5000000", "Other", "Quartz", "4000000", "")]   # same sand seen twice
+        res = ffz.diagnose(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), brief=True)
+        r = res["sand_name_rule_over_purpose_labeled_mass"]
+        self.assertEqual(r["n"], 1)
+        self.assertEqual(r["median"], 2.0)       # the name rule double counts here, and the diagnostic shows it
+        self.assertIn("share_all_three_methods", res["jobs_2013_to_now"])
+
+    def test_coverage_shares_split_by_method(self):
+        rows_ = [row2("a", "6/1/2023", "42389490090000", "5000000", "Proppant", "Silica", "4000000", ""),          # purpose mass
+                 row2("b", "6/1/2023", "42389490100000", "5000000", "Other", "Silica", "4000000", ""),             # name rule
+                 row2("c", "6/1/2023", "42389490110000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),      # percent only
+                 row2("c", "6/1/2023", "42389490110000", "5000000", "Proppant", "Silica", "", "10"),
+                 row2("d", "6/1/2023", "42389490120000", "5000000", "Surfactant", "Water", "", "")]                # nothing
+        res = ffz.diagnose(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), brief=True)
+        w = res["jobs_2013_to_now"]
+        self.assertEqual((w["cover_recorded_by_purpose"], w["cover_added_by_sand_name_rule"], w["cover_added_by_percent_only"]), (1, 1, 1))
+        self.assertEqual(w["share_all_three_methods"], 0.75)
+
+
 class EndToEndWithCore(unittest.TestCase):
     def test_adapter_output_joins_in_the_core(self):
         """8-digit RRC API and 14-digit FracFocus API must meet at the same well."""

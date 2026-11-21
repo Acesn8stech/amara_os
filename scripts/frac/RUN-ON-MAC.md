@@ -39,6 +39,12 @@ and where large sand hides when it is not labeled proppant.
     python3 scripts/frac/adapters/fracfocus_to_frac.py --zip ~/frac-data/fracfocus/FracFocusCSV.zip --output ~/frac-data/work/frac.csv
 It prints which job-key column it used. If it stops on a header mismatch, tell Claude.
 Jobs dated before 2000 or after next year are rejected (entry errors such as 1955 or 3012).
+Optional, in this order of trust (each is labeled in the proppant_basis column):
+  1. recorded pounds on a proppant-labeled row (always used first),
+  2. `--sand-by-name`: sand-like ingredients (silica, quartz, ceramic...) of 100,000 lb or more, whatever the label.
+     Check `--diagnose --brief` -> "sand_name_rule_over_purpose_labeled_mass": a median near 1.0 means it matches;
+     near 2.0 means the same sand is listed twice and the rule double counts.
+  3. `--derive-proppant-from-percent`: estimate from percent of job fluid (calibrated: median 0.997 vs recorded).
 Optional, ONLY after the calibration check passes: add `--derive-proppant-from-percent` to estimate
 proppant where pounds are blank (labeled DERIVED in the proppant_basis column).
 

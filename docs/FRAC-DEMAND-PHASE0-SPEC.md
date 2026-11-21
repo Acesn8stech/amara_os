@@ -134,3 +134,16 @@ stop and report at each gate.
   recorded pounds.
 - Entry-error dates (1955, 3012) exist; the adapter rejects years outside 2000..next year and the backtest
   refuses ranges over 400 windows so one bad date cannot hang it.
+
+## 10. Second FracFocus pass (2026-11-21)
+
+- Percent method calibrated on 53,390 real jobs: estimate / recorded pounds median 0.997 (p10 0.977, p90 1.000).
+  Jobs it fills in average 1.13 lb per gallon of base water vs 1.04 for recorded jobs, similar spread.
+- Water volume: 99.6% of jobs from 2013 on, 100% of the last 3 years. Water is the reliable forecast;
+  sand is the weaker one. Coverage must be reported beside every sand number.
+- For 35% of recent jobs, proppant-scale sand (>= 100,000 lb) is filed under labels such as "Ingredient
+  Container Purpose", "Sand", "See Trade Name(s) List" or "Silica Substrate". The optional `--sand-by-name`
+  rule counts sand by ingredient name above a 100,000 lb floor; its double-counting risk is measured in
+  `--diagnose --brief` before use.
+- Order of trust for proppant pounds: recorded on a proppant-labeled row > sand-named ingredient > percent
+  estimate. Every row says which in `proppant_basis`.
