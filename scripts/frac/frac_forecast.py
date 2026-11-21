@@ -17,6 +17,7 @@ Commands:
   forecast --permits P --frac F --as-of YYYY-MM-DD [--county NAME]
 """
 import argparse
+import bisect
 import csv
 import json
 import re
@@ -30,6 +31,30 @@ MATURE_DAYS = 540        # a permit older than this with no frac counts as "not 
 MAX_PERMIT_AGE = 540     # permits older than this are not forecast
 MAX_BACKTEST_WINDOWS = 400   # refuse absurd ranges (e.g. one bad date in the year 3012)
 UNKNOWN = "UNKNOWN"
+
+# Model options. V1 is the original design; the others are tested one at a time with `backtest --ablate`.
+#   intensity_stat: "median" | "trimmed_mean"   (a TOTAL is a sum of means, so a median runs low on skewed volumes)
+#   intensity_recent_days: None | N             (well sizes drift; only use fracs from the last N days)
+#   timing: "iqr" | "hazard"                    (hazard uses the full remaining-delay distribution)
+V1 = {"intensity_stat": "median", "intensity_recent_days": None, "timing": "iqr"}
+TRIM = 0.05
+
+
+def opts_with(**kw):
+    d = dict(V1)
+    d.update(kw)
+    return d
+
+
+def trimmed_mean(values, trim=TRIM):
+    v = sorted(values)
+    k = int(len(v) * trim)
+    v = v[k:len(v) - k] if len(v) - 2 * k > 0 else v
+    return sum(v) / len(v)
+
+
+def _stat(values, opts):
+    return statistics.median(values) if opts["intensity_stat"] == "median" else trimmed_mean(values)
 
 
 # --------------------------------------------------------------------------- parsing
@@ -165,13 +190,18 @@ def pick(groups, op, county, min_n=MIN_GROUP_N):
     return None, UNKNOWN
 
 
-def fit(joined, permits, as_of):
+def fit(joined, permits, as_of, opts=None):
     """Fit lag, intensity and completion models using ONLY data known at as_of."""
+    opts = opts or V1
     seen = [r for r in joined if r["frac_start"] <= as_of]
-    lags = _group(seen, lambda r: r["lag_days"])
-    water = _group(seen, lambda r: r["water_gal"] / r["lateral_ft"]
+    lags = {k: sorted(v) for k, v in _group(seen, lambda r: r["lag_days"]).items()}
+    # Well sizes drift over time, so intensities may use only recent fracs. Lags may NOT: restricting
+    # to recent completions would drop the long waits of recent permits (a censoring bias).
+    days = opts["intensity_recent_days"]
+    sized = seen if days is None else [r for r in seen if r["frac_start"] > as_of - timedelta(days=days)]
+    water = _group(sized, lambda r: r["water_gal"] / r["lateral_ft"]
                    if r["water_gal"] and r["lateral_ft"] else None)
-    prop = _group(seen, lambda r: r["proppant_lb"] / r["lateral_ft"]
+    prop = _group(sized, lambda r: r["proppant_lb"] / r["lateral_ft"]
                   if r["proppant_lb"] and r["lateral_ft"] else None)
 
     # Completion rate from a MATURED cohort, so recent permits that simply haven't
@@ -187,8 +217,8 @@ def fit(joined, permits, as_of):
             comp[key][0] += hit
             comp[key][1] += 1
     # Per-WELL volumes: used when a permit has no lateral length (RRC publishes none).
-    water_well = _group(seen, lambda r: r["water_gal"] if r["water_gal"] else None)
-    prop_well = _group(seen, lambda r: r["proppant_lb"] if r["proppant_lb"] else None)
+    water_well = _group(sized, lambda r: r["water_gal"] if r["water_gal"] else None)
+    prop_well = _group(sized, lambda r: r["proppant_lb"] if r["proppant_lb"] else None)
     return {"lags": lags, "water": water, "prop": prop,
             "water_well": water_well, "prop_well": prop_well, "completion": dict(comp),
             "seen_fracs": {r["api"] for r in seen}}
@@ -203,8 +233,21 @@ def completion_rate(model, op, county):
 
 
 # --------------------------------------------------------------------------- forecast
-def forecast(permits, model, as_of, weeks=13):
+def hazard_weeks(sorted_lags, age, weeks):
+    """Share of the REMAINING-delay distribution falling in each week after as_of, or None if too thin."""
+    n_rem = len(sorted_lags) - bisect.bisect_right(sorted_lags, age)
+    if n_rem < 3:
+        return None
+    out = []
+    for k in range(weeks):
+        lo, hi = max(age + 1, age + 7 * k), age + 7 * (k + 1)       # remaining delay in [7k, 7k+7)
+        out.append((bisect.bisect_left(sorted_lags, hi) - bisect.bisect_left(sorted_lags, lo)) / n_rem if hi > lo else 0.0)
+    return out
+
+
+def forecast(permits, model, as_of, weeks=13, opts=None):
     """Weekly water/proppant demand from permits with no frac yet as of `as_of`."""
+    opts = opts or V1
     start = as_of
     buckets = [{"week_start": (start + timedelta(weeks=i)).isoformat(),
                 "water_gal": 0.0, "proppant_lb": 0.0, "permits": 0.0,
@@ -221,12 +264,18 @@ def forecast(permits, model, as_of, weeks=13):
             notes["no_lag_model"] += 1
             continue
         # Condition on survival: this permit has already waited `age` days.
-        remaining = sorted(l - age for l in lags if l > age)
-        if len(remaining) < 3:
-            notes["overdue_no_comparable_history"] += 1
-            continue
-        d0, d1 = percentile(remaining, 0.25), percentile(remaining, 0.75)
-        d0, d1 = max(0, int(d0)), max(int(d1), int(d0) + 6)
+        if opts["timing"] == "hazard":
+            shares = hazard_weeks(lags, age, weeks)
+            if shares is None:
+                notes["overdue_no_comparable_history"] += 1
+                continue
+        else:
+            remaining = sorted(l - age for l in lags if l > age)
+            if len(remaining) < 3:
+                notes["overdue_no_comparable_history"] += 1
+                continue
+            d0, d1 = percentile(remaining, 0.25), percentile(remaining, 0.75)
+            d0, d1 = max(0, int(d0)), max(int(d1), int(d0) + 6)
         comp, _ = completion_rate(model, p["operator"], p["county"])
         if comp is None:
             comp = 1.0
@@ -238,25 +287,29 @@ def forecast(permits, model, as_of, weeks=13):
         lateral = p["lateral_ft"]
         if not lateral:
             notes["no_lateral_length_used_per_well_volume"] += 1
-        days = d1 - d0 + 1
-        for day in range(d0, d1 + 1):
-            wk = day // 7
-            if wk >= weeks:
-                continue
-            share = comp / days
+        if opts["timing"] == "hazard":
+            placements = [(wk, comp * s) for wk, s in enumerate(shares) if s > 0]
+        else:
+            days = d1 - d0 + 1
+            by_week = defaultdict(float)
+            for day in range(d0, d1 + 1):
+                if day // 7 < weeks:
+                    by_week[day // 7] += comp / days
+            placements = list(by_week.items())
+        for wk, share in placements:
             buckets[wk]["permits"] += share
             # Unknown is not zero: permits we cannot price are counted, not hidden.
             if lateral and w_int:
-                buckets[wk]["water_gal"] += share * lateral * statistics.median(w_int)
+                buckets[wk]["water_gal"] += share * lateral * _stat(w_int, opts)
             elif w_well:
-                buckets[wk]["water_gal"] += share * statistics.median(w_well)
+                buckets[wk]["water_gal"] += share * _stat(w_well, opts)
                 buckets[wk]["per_well_fallback_permits"] += share
             else:
                 buckets[wk]["water_unknown_permits"] += share
             if lateral and p_int:
-                buckets[wk]["proppant_lb"] += share * lateral * statistics.median(p_int)
+                buckets[wk]["proppant_lb"] += share * lateral * _stat(p_int, opts)
             elif p_well:
-                buckets[wk]["proppant_lb"] += share * statistics.median(p_well)
+                buckets[wk]["proppant_lb"] += share * _stat(p_well, opts)
             else:
                 buckets[wk]["proppant_unknown_permits"] += share
     for b in buckets:
@@ -284,7 +337,39 @@ def wape(pred, act):
     return None if total <= 0 else sum(abs(p - a) for p, a in zip(pred, act)) / total
 
 
-def classify_actuals(permits, joined, model, as_of, weeks):
+def quick_summary(results):
+    sc = [r for r in results if r["model_wape"] is not None and r["baseline_wape"] is not None]
+    if not sc:
+        return {"windows": 0}
+    errs = [(r["pred_total"] - r["actual_total"]) / r["actual_total"] for r in sc if r["actual_total"] > 0]
+    wins = sum(1 for r in sc if r["model_wape"] < r["baseline_wape"])
+    return {"windows": len(sc),
+            "median_model_wape": round(statistics.median(r["model_wape"] for r in sc), 3),
+            "median_baseline_wape": round(statistics.median(r["baseline_wape"] for r in sc), 3),
+            "model_beat_baseline": f"{wins} of {len(sc)}",
+            "median_13wk_total_bias": round(statistics.median(errs), 3) if errs else None,
+            "median_abs_13wk_total_error": round(statistics.median(abs(e) for e in errs), 3) if errs else None}
+
+
+ABLATION_VARIANTS = [
+    ("v1_original (median, iqr timing)", opts_with()),
+    ("A: trimmed mean per well", opts_with(intensity_stat="trimmed_mean")),
+    ("B: A + well sizes from last 24 months", opts_with(intensity_stat="trimmed_mean", intensity_recent_days=730)),
+    ("C: B + full-distribution (hazard) timing", opts_with(intensity_stat="trimmed_mean", intensity_recent_days=730, timing="hazard")),
+]
+
+
+def ablate(permits, joined, first, last, weeks=13, split_year=2022):
+    out = {}
+    for name, opts in ABLATION_VARIANTS:
+        results, _ = backtest(permits, joined, first, last, weeks, opts=opts)
+        out[name] = {"all_windows": quick_summary(results),
+                     f"through_{split_year}": quick_summary([r for r in results if int(r["as_of"][:4]) <= split_year]),
+                     f"{split_year + 1}_onward": quick_summary([r for r in results if int(r["as_of"][:4]) > split_year])}
+    return out
+
+
+def classify_actuals(permits, joined, model, as_of, weeks, opts=None):
     """Split the ACTUAL water used in the horizon by why the model could or could not predict it.
 
     Classes: permit_issued_after_forecast_date (short lag, unknowable then), permit_older_than_cutoff
@@ -318,17 +403,18 @@ def classify_actuals(permits, joined, model, as_of, weeks):
             per_well, _ = pick(model["water_well"], r["operator"], r["county"])
             if per_well:
                 num += w
-                den += statistics.median(per_well)
+                den += _stat(per_well, opts or V1)
     return dict(water), dict(counts), num, den
 
 
-def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30, explain=False):
+def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30, explain=False, opts=None):
+    opts = opts or V1
     results, d = [], first_as_of
     cause_water, cause_counts = defaultdict(float), defaultdict(int)
     ratio_num = ratio_den = 0.0
     while d <= last_as_of:
-        model = fit(joined, permits, d)
-        buckets, notes = forecast(permits, model, d, weeks)
+        model = fit(joined, permits, d, opts)
+        buckets, notes = forecast(permits, model, d, weeks, opts)
         act_w, act_p = actual_by_week(joined, d, weeks)
         pred_w = [b["water_gal"] for b in buckets]
         # Naive baseline: the last 28 days' actual daily average, repeated every week.
@@ -336,7 +422,7 @@ def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30, e
                      if d - timedelta(days=28) < r["frac_start"] <= d)
         base_w = [recent / 4.0] * weeks
         if explain:
-            cw, cc, n_, d_ = classify_actuals(permits, joined, model, d, weeks)
+            cw, cc, n_, d_ = classify_actuals(permits, joined, model, d, weeks, opts)
             for k, v in cw.items():
                 cause_water[k] += v
             for k, v in cc.items():
@@ -398,6 +484,10 @@ def main(argv=None):
         s.add_argument("--weeks", type=int, default=13)
     sub.choices["forecast"].add_argument("--as-of", required=True)
     sub.choices["backtest"].add_argument("--from-date", help="first as-of date (YYYY-MM-DD); default: 1 year after the first frac")
+    sub.choices["backtest"].add_argument("--ablate", action="store_true",
+                                         help="compare the original model with fixes added one at a time")
+    sub.choices["backtest"].add_argument("--model", choices=["v1", "v2"], default="v1",
+                                         help="v2 = trimmed mean + 24-month well sizes + hazard timing")
     sub.choices["backtest"].add_argument("--explain", action="store_true",
                                          help="split actual volume by why the model could/could not predict it")
     sub.choices["backtest"].add_argument("--summary-only", action="store_true",
@@ -437,7 +527,11 @@ def main(argv=None):
         print(json.dumps({"status": "NOT_ENOUGH_HISTORY",
                           "need": "at least ~1 year of fracs plus the forecast horizon"}))
         return 2
-    results, summary = backtest(permits, joined, first, last, args.weeks, explain=args.explain)
+    if args.ablate:
+        print(json.dumps({"ablation": ablate(permits, joined, first, last, args.weeks), "join": report}, indent=1))
+        return 0
+    chosen = ABLATION_VARIANTS[3][1] if args.model == "v2" else V1
+    results, summary = backtest(permits, joined, first, last, args.weeks, explain=args.explain, opts=chosen)
     payload = {"summary": summary, "join": report}
     if not args.summary_only:
         payload["windows"] = results

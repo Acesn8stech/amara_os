@@ -147,3 +147,19 @@ stop and report at each gate.
   `--diagnose --brief` before use.
 - Order of trust for proppant pounds: recorded on a proppant-labeled row > sand-named ingredient > percent
   estimate. Every row says which in `proppant_basis`.
+
+## 11. First real Reeves water backtest (2026-11-21): gate G3 FAILED, and why
+
+- 128 monthly windows from 2016: the original model beat the "last 28 days repeated" baseline in 23 (18%);
+  median weekly error 0.64 of volume vs 0.52 for the baseline. Median 13-week total bias -38%
+  (quartiles -54% to -13%): the model runs LOW.
+- Cause split (`--explain`): 88% of actual water came from wells the model could have predicted; only 12% was
+  unreachable (5.3% no comparable delay history, 5.2% permits older than the 540-day cutoff, 1.6% permits issued
+  after the forecast date). Actual per-well volume was 1.23x the predicted per-well figure.
+- So the miss is mostly VOLUME PER WELL (a median of skewed, growing well sizes), not inventory. Fixes added as
+  options and tested one at a time (`backtest --ablate`): trimmed mean, 24-month well-size window, and timing from
+  the full remaining-delay distribution instead of the middle half. Fixes were chosen from the cause split and
+  reported with a 2016-2022 / 2023-onward split, but they were designed AFTER seeing results through 2026, so
+  the later period is not a clean holdout. Treat the result as encouraging at best until tested on new data.
+- Sand: `--sand-by-name` reproduces recorded pounds (median ratio 1.00 over 48,796 jobs) and lifts proppant
+  coverage from 51% to 82% of modern jobs (83% in the last 3 years).

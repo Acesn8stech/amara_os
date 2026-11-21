@@ -17,7 +17,7 @@ TRUTH = {  # operator -> (mean lag days, sd, water gal/ft, proppant lb/ft)
 COMPLETION = 0.85
 
 
-def world(seed=7, start=date(2022, 1, 3), months=40, county="REEVES"):
+def world(seed=7, start=date(2022, 1, 3), months=40, county="REEVES", drift=0.0):
     """Permit volume comes in waves (so a flat baseline is a poor predictor)."""
     rnd = random.Random(seed)
     permits, fracs, n = [], [], 0
@@ -34,13 +34,14 @@ def world(seed=7, start=date(2022, 1, 3), months=40, county="REEVES"):
                             "county": county, "lateral_ft": lateral})
             if rnd.random() < COMPLETION:
                 lag = max(30, int(rnd.gauss(lag_mu, lag_sd)))
+                grow = 1 + drift * m / 12          # well sizes drift upward over time when drift > 0
                 fracs.append({"api": api + "0000", "frac_start": (pdate + timedelta(days=lag)).isoformat(),
-                              "operator": op, "water_gal": lateral * w_int * rnd.uniform(.9, 1.1),
-                              "proppant_lb": lateral * p_int * rnd.uniform(.9, 1.1)})
+                              "operator": op, "water_gal": lateral * w_int * grow * rnd.uniform(.9, 1.1),
+                              "proppant_lb": lateral * p_int * grow * rnd.uniform(.9, 1.1)})
     return permits, fracs
 
 
-def prepared(**kw):
+def prepared(**kw):  # kw may include drift
     permits, fracs = world(**kw)
     p, _ = ff.clean_permits(permits)
     f, _ = ff.clean_fracs(fracs)
@@ -219,6 +220,128 @@ class PerWellFallback(unittest.TestCase):
         buckets, _ = ff.forecast(blank, model, self.as_of)
         self.assertTrue(any(b["water_unknown_permits"] > 0 for b in buckets))
         self.assertTrue(all(b["water_gal"] == 0 for b in buckets))
+
+
+V2 = ff.ABLATION_VARIANTS[3][1]
+
+
+class ModelOptions(unittest.TestCase):
+    def test_trimmed_mean_ignores_extreme_values(self):
+        vals = [10.0] * 38 + [1e9, 1e9]
+        self.assertAlmostEqual(ff.trimmed_mean(vals), 10.0)
+        self.assertGreater(sum(vals) / len(vals) - 10.0, 1e7)               # a plain mean would be wrecked
+
+    def test_trimmed_mean_small_samples_fall_back_to_plain_mean(self):
+        self.assertEqual(ff.trimmed_mean([2.0, 4.0]), 3.0)
+
+    def test_recent_window_uses_only_recent_fracs_for_size(self):
+        p, f, joined, _ = prepared()
+        as_of = date(2024, 6, 1)
+        cut = as_of - timedelta(days=120)             # old wells (most of the history) are small, the last 4 months big
+        small_old = [dict(r, water_gal=1e6) if r["frac_start"] < cut else dict(r, water_gal=9e6)
+                     for r in joined if r["frac_start"] <= as_of]
+        full = ff.fit(small_old, p, as_of)
+        recent = ff.fit(small_old, p, as_of, ff.opts_with(intensity_recent_days=120))
+        full_med = statistics.median(ff.pick(full["water_well"], "ALPHA OIL", "REEVES")[0])
+        recent_med = statistics.median(ff.pick(recent["water_well"], "ALPHA OIL", "REEVES")[0])
+        self.assertEqual(recent_med, 9e6)
+        self.assertLess(full_med, recent_med)
+
+    def test_recent_window_does_not_touch_lag_model(self):
+        p, f, joined, _ = prepared()
+        as_of = date(2024, 6, 1)
+        a = ff.fit(joined, p, as_of)
+        b = ff.fit(joined, p, as_of, ff.opts_with(intensity_recent_days=365))
+        self.assertEqual(a["lags"], b["lags"])        # restricting lags to recent completions would bias them short
+
+    def test_hazard_shares_sum_to_one_over_a_long_horizon(self):
+        lags = sorted([30, 60, 90, 120, 150, 180, 210, 240, 300, 400])
+        shares = ff.hazard_weeks(lags, age=45, weeks=100)
+        self.assertAlmostEqual(sum(shares), 1.0, places=9)
+        self.assertIsNone(ff.hazard_weeks(lags, age=390, weeks=13))       # only 1 comparable lag left
+
+    def test_hazard_shares_match_hand_count(self):
+        lags = [10, 20, 30, 40, 50]
+        shares = ff.hazard_weeks(lags, age=15, weeks=4)     # remaining: 5, 15, 25, 35 -> weeks 0, 2, 3, 5
+        self.assertEqual(len(shares), 4)
+        self.assertAlmostEqual(shares[0], 0.25)              # 5
+        self.assertAlmostEqual(shares[1], 0.0)
+        self.assertAlmostEqual(shares[2], 0.25)              # 15 is in [14, 21)
+        self.assertAlmostEqual(shares[3], 0.25)              # 25 is in [21, 28)
+
+    def test_hazard_week_boundaries_are_exact(self):
+        """A remaining delay of exactly 7 days is week 1; exactly 14 is week 2 (matches actual_by_week)."""
+        shares = ff.hazard_weeks([6, 7, 13, 14], age=0, weeks=3)
+        self.assertEqual(shares, [0.25, 0.5, 0.25])
+
+    def test_hazard_forecast_has_no_look_ahead(self):
+        p, f, joined, _ = prepared()
+        as_of = date(2024, 6, 1)
+        base, _ = ff.forecast(p, ff.fit(joined, p, as_of, V2), as_of, opts=V2)
+        poisoned = copy.deepcopy(joined)
+        for r in poisoned:
+            if r["frac_start"] > as_of:
+                r["water_gal"], r["proppant_lb"], r["lag_days"] = 9e12, 9e12, 1
+        again, _ = ff.forecast(p, ff.fit(poisoned, p, as_of, V2), as_of, opts=V2)
+        self.assertEqual(base, again)
+
+    def test_hazard_and_iqr_place_the_same_total_permit_mass(self):
+        p, f, joined, _ = prepared()
+        as_of = date(2024, 6, 1)
+        model = ff.fit(joined, p, as_of)
+        v1, _ = ff.forecast(p, model, as_of, weeks=120)
+        hz, _ = ff.forecast(p, model, as_of, weeks=120, opts=ff.opts_with(timing="hazard"))
+        self.assertAlmostEqual(sum(b["permits"] for b in v1), sum(b["permits"] for b in hz), delta=0.5)
+
+    def test_options_default_to_v1_behaviour(self):
+        p, f, joined, _ = prepared()
+        as_of = date(2024, 6, 1)
+        model = ff.fit(joined, p, as_of)
+        self.assertEqual(ff.forecast(p, model, as_of), ff.forecast(p, model, as_of, opts=ff.V1))
+
+    def test_recent_sizes_cut_the_bias_when_well_sizes_grow(self):
+        p, f, joined, _ = prepared(drift=0.6)                 # wells grow ~60% a year
+        first, last = date(2023, 1, 1), date(2024, 6, 30)
+        r1, _ = ff.backtest(p, joined, first, last, opts=ff.V1)
+        rb, _ = ff.backtest(p, joined, first, last, opts=ff.ABLATION_VARIANTS[2][1])
+        b1 = abs(ff.quick_summary(r1)["median_13wk_total_bias"])
+        bb = abs(ff.quick_summary(rb)["median_13wk_total_bias"])
+        self.assertLess(bb, b1)
+
+    def test_fixes_do_no_harm_when_nothing_drifts(self):
+        p, f, joined, _ = prepared()
+        first, last = date(2023, 1, 1), date(2024, 6, 30)
+        r1, _ = ff.backtest(p, joined, first, last, opts=ff.V1)
+        rc, _ = ff.backtest(p, joined, first, last, opts=V2)
+        e1 = ff.quick_summary(r1)["median_abs_13wk_total_error"]
+        ec = ff.quick_summary(rc)["median_abs_13wk_total_error"]
+        self.assertLess(ec, e1 + 0.15)
+
+    def test_ablate_returns_every_variant_with_a_time_split(self):
+        p, f, joined, _ = prepared()
+        out = ff.ablate(p, joined, date(2023, 1, 1), date(2024, 3, 1), split_year=2023)
+        self.assertEqual(len(out), 4)
+        for name, parts in out.items():
+            self.assertEqual(set(parts), {"all_windows", "through_2023", "2024_onward"})
+            early, late, total = (parts["through_2023"]["windows"], parts["2024_onward"]["windows"],
+                                  parts["all_windows"]["windows"])
+            self.assertEqual(early + late, total)               # every window lands in exactly one half
+            self.assertGreater(early, 0)
+            self.assertGreater(late, 0)
+
+    def test_model_v2_flag_runs_through_the_cli(self):
+        import io, contextlib, csv
+        permits, fracs = world()
+        def write(rows, name):
+            path = Path(tempfile.mkdtemp()) / name
+            with open(path, "w", newline="") as h:
+                w = csv.DictWriter(h, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+            return str(path)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            ff.main(["backtest", "--permits", write(permits, "p.csv"), "--frac", write(fracs, "f.csv"),
+                     "--summary-only", "--model", "v2"])
+        self.assertIn("median_model_wape", json.loads(out.getvalue())["summary"])
 
 
 class Backtest(unittest.TestCase):

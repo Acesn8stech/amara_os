@@ -59,6 +59,9 @@ confirm date, operator and volumes match.
 Add `--summary-only` to skip the long per-window list, and `--explain` to split the actual volume by why the model
 could or could not predict it (permit issued after the forecast date, permit older than the cutoff, per-well
 volume bias, ...). Use both together: `... backtest ... --from-date 2016-01-01 --summary-only --explain`.
+`--ablate` runs the original model and three fixes added one at a time (A trimmed mean per well, B plus well sizes
+from the last 24 months, C plus full-distribution timing), each split into 2016-2022 and 2023-onward, so you can see
+which fix helps and whether it holds up on the later period. `--model v2` runs the full set of fixes.
 Do not tune anything to make a gate pass. Report the numbers as printed, including "not good enough".
 
 ## Tests
