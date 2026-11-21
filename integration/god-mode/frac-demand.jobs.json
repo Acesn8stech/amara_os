@@ -1,17 +1,27 @@
 {
   "lane": "frac-demand",
   "constitution": "docs/FRAC-DEMAND-PHASE0-SPEC.md",
-  "flow": "AMARA -> Hermes job -> backtest across counties -> summary numbers only on branch claude/frac-results",
-  "defaults": { "retries": 1, "backoff": "none", "timeout_minutes": 180, "log_to": "results_dir", "kill_switch_env": "FD_KILL_SWITCH" },
-  "jobs": [
+  "flow": "inputs change -> live service re-evaluates -> watchdog -> desk board and status endpoint (always on, not scheduled)",
+  "defaults": {
+    "restart": "always",
+    "restart_backoff_seconds": 30,
+    "kill_switch_env": "FD_KILL_SWITCH"
+  },
+  "services": [
     {
-      "name": "frac_eval",
-      "schedule": "0 4 * * 1",
-      "tz": "America/Chicago",
-      "cmd": "npm run fd -- --permits \"$FD_PERMITS\" --frac \"$FD_FRAC\" --out \"$FD_OUT\" --publish",
-      "kill_switch_env": "FD_KILL_FRAC",
-      "note": "weekly backtest of the 13-week water and sand forecast across counties. Reads inputs built by hand from RRC DAF318 and the FracFocus CSV (FracFocus terms are accepted by a person, never by a job). Never downloads data. Publishes summary .json/.md only, never CSVs."
+      "name": "frac_live",
+      "type": "service",
+      "cmd": "npm run fd:live -- --permits \"$FD_PERMITS\" --frac \"$FD_FRAC\" --out \"$FD_OUT\" --port 8765 --publish",
+      "kill_switch_env": "FD_KILL_LIVE",
+      "health_url": "http://127.0.0.1:8765/health",
+      "status_url": "http://127.0.0.1:8765/status",
+      "note": "NOT scheduled: stays running, re-evaluates the moment the input files change, backs off on failure, stops and raises an alert after repeated failures. Read-only status on localhost only. Never downloads data (FracFocus terms need a person) and never touches the globe or UI. If Hermes cannot supervise a service, use integration/god-mode/com.amara.frac-live.plist."
     }
   ],
-  "failure_policy": "tests fail -> stop before any backtest; a failed publish never deletes local results; results are ESTIMATE-labeled backtests, not live forecasts"
+  "desk": {
+    "cmd": "npm run fd:desk -- --dir \"$FD_OUT\"",
+    "note": "read-only live terminal board: status, risk, per-county edge for water and sand, event tape. Exit code with --once: 0 OK, 1 WARN, 2 ALERT, 3 feed down."
+  },
+  "jobs": [],
+  "failure_policy": "tests fail -> no backtest runs; a failed run backs off and retries; repeated failures stop the service and write ALERT.md; a failed publish never deletes local results; outputs are ESTIMATE-labeled backtests, not live forecasts"
 }

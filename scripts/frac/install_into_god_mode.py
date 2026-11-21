@@ -4,8 +4,9 @@
 Adds, and nothing else:
   scripts/frac/**                        the forecast, adapters, evaluation suite and tests
   docs/FRAC-DEMAND-PHASE0-SPEC.md        the spec
-  hermes/frac-demand.jobs.json           a Hermes lane in the same format as open-acreage.jobs.json
-  package.json scripts                   fd, fd:forecast, test:frac  (existing scripts are never changed)
+  hermes/frac-demand.jobs.json           a Hermes lane: an always-on service (NOT a schedule) plus the desk
+  integration/god-mode/*                 autonomy policy, keep-alive definition, install notes
+  package.json scripts                   fd, fd:live, fd:desk, fd:watch, fd:forecast, test:frac (existing scripts never changed)
 
 HARD RULE: the globe and UI stay untouched. The installer refuses to write under src/app, src/canvas,
 src/components or public, and checks they are byte-identical after an apply.
@@ -23,9 +24,15 @@ PROTECTED = ("src/app", "src/canvas", "src/components", "public")
 NPM_SCRIPTS = {
     "fd": "python3 scripts/frac/run_suite.py",
     "fd:forecast": "python3 scripts/frac/frac_forecast.py",
+    "fd:live": "python3 scripts/frac/live.py",
+    "fd:desk": "python3 scripts/frac/desk.py",
+    "fd:watch": "python3 scripts/frac/watchdog.py",
     "test:frac": "python3 -m unittest scripts/frac/test_frac_forecast.py scripts/frac/adapters/test_adapters.py "
-                 "scripts/frac/test_run_suite.py scripts/frac/test_install.py",
+                 "scripts/frac/test_run_suite.py scripts/frac/test_watchdog.py scripts/frac/test_live.py "
+                 "scripts/frac/test_desk.py",
 }
+NOT_INSTALLED = {"scripts/frac/install_into_god_mode.py", "scripts/frac/test_install.py"}   # only meaningful in the source repo
+INTEGRATION_FILES = ("autonomy-policy.json", "com.amara.frac-live.plist", "INSTALL.md")
 HERMES_SRC = "integration/god-mode/frac-demand.jobs.json"
 HERMES_DST = "hermes/frac-demand.jobs.json"
 SPEC = "docs/FRAC-DEMAND-PHASE0-SPEC.md"
@@ -35,8 +42,12 @@ def file_map(source):
     pairs = []
     for p in sorted((source / "scripts" / "frac").rglob("*")):
         if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc":
-            pairs.append((p, p.relative_to(source).as_posix()))
-    for rel_src, rel_dst in ((SPEC, SPEC), (HERMES_SRC, HERMES_DST)):
+            rel = p.relative_to(source).as_posix()
+            if rel not in NOT_INSTALLED:
+                pairs.append((p, rel))
+    extra = [(SPEC, SPEC), (HERMES_SRC, HERMES_DST)] + [(f"integration/god-mode/{n}", f"integration/god-mode/{n}")
+                                                          for n in INTEGRATION_FILES]
+    for rel_src, rel_dst in extra:
         if (source / rel_src).is_file():
             pairs.append((source / rel_src, rel_dst))
     return pairs

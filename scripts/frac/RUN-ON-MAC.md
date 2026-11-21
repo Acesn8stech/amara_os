@@ -87,3 +87,15 @@ results can be read without pasting anything. Takes several minutes.
 
 Inside AMARA God Mode: `python3 scripts/frac/install_into_god_mode.py --target <god-mode> --apply` (dry run without
 `--apply`), then `npm run fd -- ...` with the same arguments. See `integration/god-mode/INSTALL.md`.
+
+## Live (always on, no schedule)
+
+    # terminal 1: the live service. Stays running and re-evaluates when permits.csv or frac_v2.csv changes.
+    python3 scripts/frac/live.py --permits ~/frac-data/work/permits.csv --frac ~/frac-data/work/frac_v2.csv --out ~/frac-data/work/live --port 8765 --publish
+    # terminal 2: the desk board (Ctrl-C to quit)
+    python3 scripts/frac/desk.py --dir ~/frac-data/work/live
+
+Stop the service: Ctrl-C in its terminal, or `touch ~/frac-data/work/live/STOP`. It writes live_status.json and
+live_events.jsonl (one JSON line per event, also printed, so a Claude session can stream it with the Monitor tool).
+It never downloads data, never accepts website terms, and never changes the model. If it stops after repeated
+failures it writes ALERT.md: read it before restarting.

@@ -55,7 +55,8 @@ CAVEATS = """\
 
 def run_tests(repo_root):
     cmd = [sys.executable, "-m", "unittest", "scripts/frac/test_frac_forecast.py", "scripts/frac/adapters/test_adapters.py",
-           "scripts/frac/test_run_suite.py"]
+           "scripts/frac/test_run_suite.py", "scripts/frac/test_watchdog.py",
+           "scripts/frac/test_live.py", "scripts/frac/test_desk.py"]
     p = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
     tail = [ln for ln in p.stderr.strip().splitlines() if ln][-3:]
     return p.returncode == 0, " | ".join(tail)

@@ -221,3 +221,21 @@ Seven counties (Reeves, Loving, Midland, Martin, Howard, Upton, Culberson), v2 v
 - `scripts/frac/install_into_god_mode.py` + `integration/god-mode/`: installs this into AMARA God Mode (npm
   scripts `fd`, `fd:forecast`, `test:frac`, and a Hermes lane `hermes/frac-demand.jobs.json`) without touching the
   globe or UI.
+
+## 16. Live operation (2026-11-21): a desk, not a schedule
+
+- `scripts/frac/live.py`: always-on service. Polls the two input files; when they change and stay unchanged for the
+  debounce period it runs `run_suite` then `watchdog`; backs off exponentially on failure and stops (with ALERT.md)
+  after `--max-failures` in a row; read-only status on 127.0.0.1; lock file prevents two instances; STOP file,
+  SIGTERM or FD_KILL_SWITCH stop it. Heartbeat and events are on disk for any reader.
+- `scripts/frac/watchdog.py`: deterministic OK / WARN / ALERT from each run (incomplete run, failed tests, stale
+  inputs, forecast no longer beating the trailing average in at least 60% of counties, bias, regression vs the previous
+  run). It never changes anything; ALERT means a person looks.
+- `scripts/frac/desk.py`: read-only terminal board: STATUS (alive? what is it doing?), RISK (watchdog), BOARD (per
+  county edge over the trailing average, water and sand, plus turning points), TAPE (event blotter), `--once` with a
+  health exit code, `--recap HOURS`. A silent or stopped service shows FEED DOWN (exit 3).
+- Autonomy limits are in `integration/god-mode/autonomy-policy.json`: no accepting terms, no data downloads, no
+  deleting, no pushing anywhere but `claude/frac-results`, no retuning to clear an alert, localhost-only server,
+  nothing on the globe without a preview and approval.
+- Honest limits: the live service must run where the data is (the Mac); a cloud sandbox cannot reach the data sources.
+  FracFocus refreshes need a person. The numbers are backtests, not live forecasts.

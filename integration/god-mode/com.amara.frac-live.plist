@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Keeps the frac live service running: starts at login and restarts if it dies. NOT a schedule (no
+     StartInterval / StartCalendarInterval). Replace __PYTHON__, __REPO__, __HOME__ before loading; this needs
+     Scott's go-ahead because it changes login items. Stop it with:  touch __HOME__/frac-data/work/live/STOP  -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.amara.frac-live</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>__REPO__/scripts/frac/live.py</string>
+    <string>--permits</string><string>__HOME__/frac-data/work/permits.csv</string>
+    <string>--frac</string><string>__HOME__/frac-data/work/frac_v2.csv</string>
+    <string>--out</string><string>__HOME__/frac-data/work/live</string>
+    <string>--port</string><string>8765</string>
+  </array>
+  <key>WorkingDirectory</key><string>__REPO__</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>__HOME__/frac-data/work/live/service.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/frac-data/work/live/service.err.log</string>
+</dict>
+</plist>

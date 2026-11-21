@@ -1,0 +1,40 @@
+{
+  "lane": "frac-demand",
+  "purpose": "Rules for any bot (Hermes job, Claude scheduled task, Cursor agent) that works on this lane without a person watching.",
+  "allowed": [
+    "run scripts/frac/run_suite.py and scripts/frac/watchdog.py on inputs a person already built",
+    "write summary .json/.md/.txt files to the results folder",
+    "publish summary files to the branch claude/frac-results (run_suite.py --publish does this safely)",
+    "read published results and report what changed, in plain words",
+    "open an alert (ALERT.md / status.json) when the watchdog says WARN or ALERT",
+    "run scripts/frac/live.py as a long-running service on the owner's machine and read its status",
+    "run scripts/frac/desk.py (read-only)"
+  ],
+  "forbidden": [
+    "accept any website terms of use, or click a download that requires accepting terms (FracFocus needs a person)",
+    "make purchases, sign in anywhere, or use credentials",
+    "delete, move or overwrite raw data, snapshots or backups",
+    "push code or data to any branch other than claude/frac-results, or force-push anywhere",
+    "change model settings, thresholds or code to make a gate pass or an alert go away",
+    "modify src/app, src/canvas, src/components or public (the globe and UI)",
+    "add visible globe features without a preview and Scott's approval",
+    "treat a backtest as a live forecast",
+    "bind the live status server to anything other than 127.0.0.1",
+    "let the live service download data or accept website terms",
+    "restart a service that stopped_after_failures without a person reading ALERT.md",
+    "keep retrying a failing run forever (the service stops after max failures on purpose)"
+  ],
+  "needs_a_person": [
+    "refreshing FracFocus data (terms must be accepted by a person)",
+    "any ALERT from the watchdog",
+    "a header or layout mismatch reported by an adapter",
+    "changing the model or the thresholds",
+    "restarting after stopped_after_failures",
+    "loading the launchd keep-alive (it changes login items)"
+  ],
+  "kill_switch_env": [
+    "FD_KILL_SWITCH",
+    "FD_KILL_FRAC",
+    "FD_KILL_WATCH"
+  ]
+}

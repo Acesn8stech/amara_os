@@ -49,7 +49,7 @@ class Install(unittest.TestCase):
         paths = {f["path"] for f in summary["files"]}
         self.assertIn("scripts/frac/frac_forecast.py", paths)
         self.assertIn("hermes/frac-demand.jobs.json", paths)
-        self.assertEqual(sorted(summary["npm_scripts_to_add"]), ["fd", "fd:forecast", "test:frac"])
+        self.assertEqual(sorted(summary["npm_scripts_to_add"]), ["fd", "fd:desk", "fd:forecast", "fd:live", "fd:watch", "test:frac"])
 
     def test_apply_adds_files_scripts_and_hermes_lane_and_keeps_existing_scripts(self):
         self.run_main("--apply")
@@ -62,7 +62,13 @@ class Install(unittest.TestCase):
         self.assertTrue(scripts["fd"].startswith("python3 scripts/frac/run_suite.py"))
         lane = json.loads((self.t / "hermes/frac-demand.jobs.json").read_text())
         self.assertEqual(lane["lane"], "frac-demand")
-        self.assertEqual(lane["jobs"][0]["name"], "frac_eval")
+        self.assertEqual(lane["services"][0]["name"], "frac_live")
+        self.assertEqual(lane["jobs"], [])                                       # nothing scheduled
+        self.assertNotIn("schedule", json.dumps(lane).replace("NOT scheduled", "").replace("not scheduled", "").replace("(NOT a schedule)", ""))
+        plist = (self.t / "integration/god-mode/com.amara.frac-live.plist").read_text()
+        self.assertIn("KeepAlive", plist)
+        self.assertNotIn("<key>StartInterval", plist)
+        self.assertNotIn("<key>StartCalendarInterval", plist)
 
     def test_the_globe_and_ui_are_byte_identical_after_apply(self):
         protected = ["src/app", "src/canvas", "src/components", "public"]
@@ -141,11 +147,16 @@ class Install(unittest.TestCase):
         finally:
             shutil.rmtree(pyc_dir, ignore_errors=True)
 
-    def test_the_installed_copy_passes_its_own_forecast_tests(self):
+    def test_the_installer_and_its_own_test_are_not_copied(self):
         self.run_main("--apply")
-        p = subprocess.run([sys.executable, "-m", "unittest", "scripts/frac/test_frac_forecast.py"],
-                           cwd=self.t, capture_output=True, text=True)
-        self.assertEqual(p.returncode, 0, p.stderr[-500:])
+        self.assertFalse((self.t / "scripts/frac/install_into_god_mode.py").exists())
+        self.assertFalse((self.t / "scripts/frac/test_install.py").exists())
+
+    def test_the_installed_copy_passes_all_of_its_own_tests(self):
+        self.run_main("--apply")
+        files = sorted(p.relative_to(self.t).as_posix() for p in (self.t / "scripts/frac").rglob("test_*.py"))
+        p = subprocess.run([sys.executable, "-m", "unittest", *files], cwd=self.t, capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr[-800:])
 
 
 if __name__ == "__main__":
