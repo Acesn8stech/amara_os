@@ -163,3 +163,20 @@ stop and report at each gate.
   the later period is not a clean holdout. Treat the result as encouraging at best until tested on new data.
 - Sand: `--sand-by-name` reproduces recorded pounds (median ratio 1.00 over 48,796 jobs) and lifts proppant
   coverage from 51% to 82% of modern jobs (83% in the last 3 years).
+
+## 12. Reeves ablation result (2026-11-21)
+
+| model | 13-wk total bias | median abs 13-wk total error | weekly error vs baseline (0.518) |
+|---|---|---|---|
+| original | -38.5% | 43.5% | 0.644 |
+| A trimmed mean | -36.2% | 43.6% | 0.642 |
+| B + 24-month well sizes | -28.2% | 39.6% | 0.643 |
+| C + full-distribution timing (v2) | -6.7% | 23.3% | 0.516 |
+
+- The timing change did most of the work: the middle-half placement of each permit's expected frac distorted
+  when volume arrived. v2 ties the trailing-average baseline weekly (56 of 128 windows; 0.488 vs 0.484 through
+  2022, 0.540 vs 0.613 from 2023). A tie is not a win and the usefulness thesis (see demand before it shows) is
+  NOT yet demonstrated on real data.
+- Pending: the baseline's 13-week total error, and turning-point windows, now measured by `backtest`.
+  Out-of-sample test: `--compare-counties` on counties never looked at during design.
+- Design caveat: v2 was designed after seeing Reeves results through 2026; Reeves is not a clean holdout.

@@ -344,6 +344,90 @@ class ModelOptions(unittest.TestCase):
         self.assertIn("median_model_wape", json.loads(out.getvalue())["summary"])
 
 
+class TotalsAndTurningPoints(unittest.TestCase):
+    def test_window_results_carry_baseline_total_and_prior_actual(self):
+        p, f, joined, _ = prepared()
+        results, _ = ff.backtest(p, joined, date(2024, 1, 1), date(2024, 3, 1))
+        r = results[0]
+        d = date.fromisoformat(r["as_of"])
+        recent = sum(x["water_gal"] or 0 for x in joined if d - timedelta(days=28) < x["frac_start"] <= d)
+        self.assertAlmostEqual(r["baseline_total"], recent / 4.0 * 13, places=3)
+        prior = sum(x["water_gal"] or 0 for x in joined if d - timedelta(weeks=13) < x["frac_start"] <= d)
+        self.assertAlmostEqual(r["prior_actual_total"], prior, places=3)
+
+    def test_quick_summary_hand_computed(self):
+        mk = lambda mw, bw, pred, act, base, prior: {"model_wape": mw, "baseline_wape": bw, "pred_total": pred,
+                                                      "actual_total": act, "baseline_total": base, "prior_actual_total": prior}
+        results = [mk(.5, .6, 120, 100, 150, 100),      # model +20%, baseline +50%, no turn
+                   mk(.7, .6, 80, 100, 100, 100),       # model -20%, baseline exact, no turn
+                   mk(.4, .9, 150, 200, 100, 100)]      # model -25%, baseline -50%, actual doubled: a turning point
+        q = ff.quick_summary(results)
+        self.assertEqual(q["model_beat_baseline"], "2 of 3")
+        self.assertEqual(q["model_beat_baseline_on_13wk_total"], "2 of 3")
+        self.assertEqual(q["median_abs_13wk_total_error"], 0.2)           # |120-100|/100, |80-100|/100, |150-200|/200
+        self.assertEqual(q["baseline_median_abs_13wk_total_error"], 0.5)
+        self.assertEqual(q["median_13wk_total_bias"], -0.2)               # +0.20, -0.20, -0.25
+        self.assertEqual(q["turning_point_windows"], {"n": 1, "model_median_abs_error": 0.25, "baseline_median_abs_error": 0.5})
+
+    def test_turning_threshold_is_25_percent(self):
+        mk = lambda act, prior: {"model_wape": .5, "baseline_wape": .5, "pred_total": act, "actual_total": act,
+                                 "baseline_total": act, "prior_actual_total": prior}
+        self.assertNotIn("turning_point_windows", ff.quick_summary([mk(124, 100)]))      # +24%
+        self.assertIn("turning_point_windows", ff.quick_summary([mk(126, 100)]))         # +26%
+        self.assertNotIn("turning_point_windows", ff.quick_summary([mk(80, 100)]))       # -20%
+        self.assertIn("turning_point_windows", ff.quick_summary([mk(70, 100)]))          # -30%: a drop is a turn too
+
+    def test_model_beats_trailing_average_at_turning_points_when_permits_lead(self):
+        p, f, joined, _ = prepared()
+        results, _ = ff.backtest(p, joined, date(2023, 1, 1), date(2024, 12, 1), opts=V2)
+        tp = ff.quick_summary(results)["turning_point_windows"]
+        self.assertGreater(tp["n"], 5)
+        self.assertLess(tp["model_median_abs_error"], tp["baseline_median_abs_error"])
+
+
+class CompareCounties(unittest.TestCase):
+    def build(self):
+        a_permits, a_fracs = world(seed=7, county="REEVES")
+        b_permits, b_fracs = world(seed=9, county="PECOS")
+        for r in b_permits + b_fracs:
+            r["api"] = "42" + "371" + r["api"][5:]            # a different county code, so the wells differ
+        permits, _ = ff.clean_permits(a_permits + b_permits)
+        fracs, _ = ff.clean_fracs(a_fracs + b_fracs)
+        return permits, fracs, len(a_permits), len(b_permits)
+
+    def test_each_county_is_isolated(self):
+        permits, fracs, na, nb = self.build()
+        out = ff.compare_counties(permits, fracs, ["Reeves", "pecos"], from_date=date(2024, 1, 1))
+        self.assertEqual(out["REEVES"]["permits"], na)
+        self.assertEqual(out["PECOS"]["permits"], nb)
+        for county in ("REEVES", "PECOS"):
+            self.assertIn("v1", out[county])
+            self.assertIn("v2", out[county])
+            self.assertNotEqual(out[county]["v1"], out[county]["v2"])     # the two models really are different runs
+
+    def test_unknown_county_and_short_history_reported_not_crashed(self):
+        permits, fracs, _, _ = self.build()
+        out = ff.compare_counties(permits, fracs, ["NOWHERE"])
+        self.assertEqual(out["NOWHERE"]["status"], "NO_JOINED_ROWS")
+        out = ff.compare_counties(permits, fracs, ["REEVES"], from_date=date(2090, 1, 1))
+        self.assertIn("NOT_ENOUGH_HISTORY", out["REEVES"]["status"])
+
+    def test_cli_compare_counties(self):
+        import io, contextlib, csv
+        a_permits, a_fracs = world(seed=7, county="REEVES")
+        def write(rows, name):
+            path = Path(tempfile.mkdtemp()) / name
+            with open(path, "w", newline="") as h:
+                w = csv.DictWriter(h, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+            return str(path)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = ff.main(["backtest", "--permits", write(a_permits, "p.csv"), "--frac", write(a_fracs, "f.csv"),
+                          "--compare-counties", "reeves", "--from-date", "2024-01-01"])
+        self.assertEqual(rc, 0)
+        self.assertIn("v2", json.loads(out.getvalue())["compare_counties"]["REEVES"])
+
+
 class Backtest(unittest.TestCase):
     def test_model_beats_flat_baseline_on_wavy_synthetic_world(self):
         p, f, joined, _ = prepared()

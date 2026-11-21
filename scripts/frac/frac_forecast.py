@@ -37,7 +37,9 @@ UNKNOWN = "UNKNOWN"
 #   intensity_recent_days: None | N             (well sizes drift; only use fracs from the last N days)
 #   timing: "iqr" | "hazard"                    (hazard uses the full remaining-delay distribution)
 V1 = {"intensity_stat": "median", "intensity_recent_days": None, "timing": "iqr"}
+V2 = {"intensity_stat": "trimmed_mean", "intensity_recent_days": 730, "timing": "hazard"}   # all three fixes
 TRIM = 0.05
+TURN = 0.25     # a "turning point" window: next 13 weeks differ from the previous 13 by more than 25%
 
 
 def opts_with(**kw):
@@ -343,19 +345,37 @@ def quick_summary(results):
         return {"windows": 0}
     errs = [(r["pred_total"] - r["actual_total"]) / r["actual_total"] for r in sc if r["actual_total"] > 0]
     wins = sum(1 for r in sc if r["model_wape"] < r["baseline_wape"])
-    return {"windows": len(sc),
-            "median_model_wape": round(statistics.median(r["model_wape"] for r in sc), 3),
-            "median_baseline_wape": round(statistics.median(r["baseline_wape"] for r in sc), 3),
-            "model_beat_baseline": f"{wins} of {len(sc)}",
-            "median_13wk_total_bias": round(statistics.median(errs), 3) if errs else None,
-            "median_abs_13wk_total_error": round(statistics.median(abs(e) for e in errs), 3) if errs else None}
+    tot = [r for r in sc if r["actual_total"] > 0]
+    m_err = [abs(r["pred_total"] - r["actual_total"]) / r["actual_total"] for r in tot]
+    b_err = [abs(r["baseline_total"] - r["actual_total"]) / r["actual_total"] for r in tot]
+    total_wins = sum(1 for m, b in zip(m_err, b_err) if m < b)
+    out = {"windows": len(sc),
+           "median_model_wape": round(statistics.median(r["model_wape"] for r in sc), 3),
+           "median_baseline_wape": round(statistics.median(r["baseline_wape"] for r in sc), 3),
+           "model_beat_baseline": f"{wins} of {len(sc)}",
+           "median_13wk_total_bias": round(statistics.median(errs), 3) if errs else None,
+           "median_abs_13wk_total_error": round(statistics.median(m_err), 3) if m_err else None,
+           "baseline_median_abs_13wk_total_error": round(statistics.median(b_err), 3) if b_err else None,
+           "model_beat_baseline_on_13wk_total": f"{total_wins} of {len(tot)}"}
+    # Turning points: windows where the next 13 weeks differ from the last 13 by more than TURN. A trailing
+    # average cannot see these coming; a permit pipeline might. This is the claim being tested.
+    big = [r for r in tot if r["prior_actual_total"] > 0
+           and abs(r["actual_total"] - r["prior_actual_total"]) / r["prior_actual_total"] > TURN]
+    if big:
+        out["turning_point_windows"] = {
+            "n": len(big),
+            "model_median_abs_error": round(statistics.median(
+                abs(r["pred_total"] - r["actual_total"]) / r["actual_total"] for r in big), 3),
+            "baseline_median_abs_error": round(statistics.median(
+                abs(r["baseline_total"] - r["actual_total"]) / r["actual_total"] for r in big), 3)}
+    return out
 
 
 ABLATION_VARIANTS = [
     ("v1_original (median, iqr timing)", opts_with()),
     ("A: trimmed mean per well", opts_with(intensity_stat="trimmed_mean")),
     ("B: A + well sizes from last 24 months", opts_with(intensity_stat="trimmed_mean", intensity_recent_days=730)),
-    ("C: B + full-distribution (hazard) timing", opts_with(intensity_stat="trimmed_mean", intensity_recent_days=730, timing="hazard")),
+    ("C: B + full-distribution (hazard) timing", dict(V2)),
 ]
 
 
@@ -366,6 +386,31 @@ def ablate(permits, joined, first, last, weeks=13, split_year=2022):
         out[name] = {"all_windows": quick_summary(results),
                      f"through_{split_year}": quick_summary([r for r in results if int(r["as_of"][:4]) <= split_year]),
                      f"{split_year + 1}_onward": quick_summary([r for r in results if int(r["as_of"][:4]) > split_year])}
+    return out
+
+
+def compare_counties(permits, fracs, counties, weeks=13, from_date=None):
+    """Run V1 and V2 on each county separately: the real out-of-sample check when the model was
+    designed while looking at only one of them."""
+    out = {}
+    for name in counties:
+        want = name.strip().upper()
+        cp = {k: v for k, v in permits.items() if v["county"] == want}
+        joined, rep_ = join(cp, fracs)
+        if not joined:
+            out[want] = {"status": "NO_JOINED_ROWS", "permits": len(cp)}
+            continue
+        first = min(r["frac_start"] for r in joined) + timedelta(days=365)
+        last = max(r["frac_start"] for r in joined) - timedelta(weeks=weeks)
+        if from_date:
+            first = max(first, from_date)
+        if first > last or (last - first).days / 30 > MAX_BACKTEST_WINDOWS:
+            out[want] = {"status": "NOT_ENOUGH_HISTORY_OR_RANGE_TOO_LARGE", "permits": len(cp), "joined": len(joined)}
+            continue
+        r1, _ = backtest(cp, joined, first, last, weeks, opts=V1)
+        r2, _ = backtest(cp, joined, first, last, weeks, opts=V2)
+        out[want] = {"permits": len(cp), "joined": len(joined), "match_rate": rep_["match_rate"],
+                     "v1": quick_summary(r1), "v2": quick_summary(r2)}
     return out
 
 
@@ -421,6 +466,8 @@ def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30, e
         recent = sum(r["water_gal"] or 0.0 for r in joined
                      if d - timedelta(days=28) < r["frac_start"] <= d)
         base_w = [recent / 4.0] * weeks
+        prior_actual = sum(r["water_gal"] or 0.0 for r in joined
+                           if d - timedelta(weeks=weeks) < r["frac_start"] <= d)
         if explain:
             cw, cc, n_, d_ = classify_actuals(permits, joined, model, d, weeks, opts)
             for k, v in cw.items():
@@ -432,6 +479,7 @@ def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30, e
         results.append({"as_of": d.isoformat(),
                         "model_wape": wape(pred_w, act_w), "baseline_wape": wape(base_w, act_w),
                         "pred_total": sum(pred_w), "actual_total": sum(act_w),
+                        "baseline_total": sum(base_w), "prior_actual_total": prior_actual,
                         "actual_proppant_total": sum(act_p), "notes": notes})
         d += timedelta(days=step_days)
     scored = [r for r in results if r["model_wape"] is not None and r["baseline_wape"] is not None]
@@ -484,6 +532,8 @@ def main(argv=None):
         s.add_argument("--weeks", type=int, default=13)
     sub.choices["forecast"].add_argument("--as-of", required=True)
     sub.choices["backtest"].add_argument("--from-date", help="first as-of date (YYYY-MM-DD); default: 1 year after the first frac")
+    sub.choices["backtest"].add_argument("--compare-counties",
+                                         help="comma-separated county names: run v1 and v2 on each (out-of-sample check)")
     sub.choices["backtest"].add_argument("--ablate", action="store_true",
                                          help="compare the original model with fixes added one at a time")
     sub.choices["backtest"].add_argument("--model", choices=["v1", "v2"], default="v1",
@@ -495,6 +545,13 @@ def main(argv=None):
     sub.choices["backtest"].add_argument("--to-date", help="last as-of date (YYYY-MM-DD); default: last frac minus the horizon")
     args = ap.parse_args(argv)
 
+    if args.cmd == "backtest" and args.compare_counties:
+        permits_all, _ = clean_permits(read_csv(args.permits))
+        fracs_all, _ = clean_fracs(read_csv(args.frac))
+        names = [n for n in args.compare_counties.split(",") if n.strip()]
+        print(json.dumps({"compare_counties": compare_counties(
+            permits_all, fracs_all, names, args.weeks, parse_date(args.from_date) if args.from_date else None)}, indent=1))
+        return 0
     permits, joined, report = _load(args)
     print("JOIN REPORT (gate G1 needs a hand re-check of 10 rows):", json.dumps(report, indent=1), file=sys.stderr)
     if not joined:
@@ -530,7 +587,7 @@ def main(argv=None):
     if args.ablate:
         print(json.dumps({"ablation": ablate(permits, joined, first, last, args.weeks), "join": report}, indent=1))
         return 0
-    chosen = ABLATION_VARIANTS[3][1] if args.model == "v2" else V1
+    chosen = V2 if args.model == "v2" else V1
     results, summary = backtest(permits, joined, first, last, args.weeks, explain=args.explain, opts=chosen)
     payload = {"summary": summary, "join": report}
     if not args.summary_only:

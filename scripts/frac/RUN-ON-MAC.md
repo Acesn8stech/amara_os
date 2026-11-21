@@ -62,6 +62,10 @@ volume bias, ...). Use both together: `... backtest ... --from-date 2016-01-01 -
 `--ablate` runs the original model and three fixes added one at a time (A trimmed mean per well, B plus well sizes
 from the last 24 months, C plus full-distribution timing), each split into 2016-2022 and 2023-onward, so you can see
 which fix helps and whether it holds up on the later period. `--model v2` runs the full set of fixes.
+`--compare-counties REEVES,PECOS,LOVING,...` runs the original and v2 models on each county separately. Because v2
+was designed while looking at Reeves only, the OTHER counties are the honest out-of-sample test. Each county reports
+weekly error, 13-week total error against the trailing-average baseline, and "turning point" windows (next 13
+weeks differ from the last 13 by more than 25%), which is where a permit pipeline should beat a lagging average.
 Do not tune anything to make a gate pass. Report the numbers as printed, including "not good enough".
 
 ## Tests
