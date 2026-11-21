@@ -39,6 +39,9 @@ sj = _load("sj", "sample_join.py")
 
 DEFAULT_COUNTIES = "REEVES,LOVING,MIDLAND,MARTIN,HOWARD,UPTON,CULBERSON,PECOS,WARD,WINKLER"
 ALLOWED_SUFFIXES = {".json", ".md", ".txt"}
+# Used for the results commit ONLY when git has no author identity configured. Clearly a bot, no personal details.
+FALLBACK_AUTHOR = ("AMARA frac desk (automated)", "frac-desk@noreply.invalid")
+LAST_PUBLISH = {"attempted": False, "ok": None, "message": ""}      # read by live.py after main()
 MAX_PUBLISH_BYTES = 5 * 1024 * 1024
 CAVEATS = """\
 ## Read this before trusting any number
@@ -118,7 +121,29 @@ def build_summary(runs, meta, tests, samples):
     return "\n".join(out)
 
 
-def publish(out_dir, repo_root, branch="claude/frac-results"):
+def parse_author(text):
+    """'Name <email>' -> (name, email)."""
+    name, _, rest = text.partition("<")
+    email = rest.rstrip("> ").strip()
+    if not name.strip() or "@" not in email:
+        raise SystemExit("--publish-author must look like: Name <email@example.com>")
+    return name.strip(), email
+
+
+def commit_identity(repo_root, author=None):
+    """Extra git arguments giving the results commit an author. An explicit author wins; otherwise git's own
+    identity is used if it has one; otherwise a clearly-labelled bot identity, so publishing never depends on
+    the machine having git configured."""
+    if author:
+        name, email = parse_author(author)
+        return ["-c", f"user.name={name}", "-c", f"user.email={email}"]
+    probe = subprocess.run(["git", "var", "GIT_AUTHOR_IDENT"], cwd=repo_root, capture_output=True, text=True)
+    if probe.returncode == 0 and probe.stdout.strip():
+        return []
+    return ["-c", f"user.name={FALLBACK_AUTHOR[0]}", "-c", f"user.email={FALLBACK_AUTHOR[1]}"]
+
+
+def publish(out_dir, repo_root, branch="claude/frac-results", author=None):
     """Commit only summary files to an orphan-style results branch and push it. Raw data never goes."""
     out_dir = Path(out_dir)
     files = sorted(p for p in out_dir.iterdir() if p.is_file())
@@ -156,7 +181,8 @@ def publish(out_dir, repo_root, branch="claude/frac-results"):
         for p in files:
             (dest / p.name).write_bytes(p.read_bytes())
         git("add", "results", cwd=work)
-        git("commit", "-q", "-m", f"frac evaluation results {stamp} (summary numbers only)", cwd=work)
+        git(*commit_identity(repo_root, author), "commit", "-q", "-m",
+            f"frac evaluation results {stamp} (summary numbers only)", cwd=work)
         git("push", "origin", f"{tmp_branch}:refs/heads/{branch}", cwd=work)
         return f"pushed results/{stamp} to origin/{branch}"
     finally:
@@ -176,6 +202,8 @@ def main(argv=None):
     ap.add_argument("--skip-tests", action="store_true")
     ap.add_argument("--publish", action="store_true")
     ap.add_argument("--branch", default="claude/frac-results")
+    ap.add_argument("--publish-author", help='author for the results commit, e.g. "Scott <you@example.com>". '
+                                             "Default: git's own identity, or a labelled bot identity if git has none.")
     args = ap.parse_args(argv)
 
     out = Path(args.out).expanduser()
@@ -221,8 +249,17 @@ def main(argv=None):
     summary = build_summary(runs, meta, tests, samples)
     (out / "SUMMARY.md").write_text(summary)
     print(summary)
+    global LAST_PUBLISH
+    LAST_PUBLISH = {"attempted": False, "ok": None, "message": ""}
     if args.publish:
-        print(publish(out, repo_root, args.branch), file=sys.stderr)
+        # Publishing is a convenience. If it fails the results are still complete on disk, so the run still counts.
+        try:
+            msg = publish(out, repo_root, args.branch, author=args.publish_author)
+            LAST_PUBLISH = {"attempted": True, "ok": True, "message": msg}
+            print(msg, file=sys.stderr)
+        except (SystemExit, Exception) as exc:
+            LAST_PUBLISH = {"attempted": True, "ok": False, "message": str(exc)[:300]}
+            print(f"PUBLISH FAILED (results are still complete in {out}): {exc}", file=sys.stderr)
     return 0
 
 

@@ -98,6 +98,39 @@ class Suite(unittest.TestCase):
         self.assertEqual({p.name for p in out.iterdir()}, {"SUMMARY.md"})
         self.assertIn("boom", (out / "SUMMARY.md").read_text())
 
+    def test_a_failed_publish_does_not_fail_the_run_and_results_stay_on_disk(self):
+        permits, fracs, d = synthetic_inputs()
+        out = d / "results"
+        original = rs.publish
+        def boom(*a, **kw):
+            raise SystemExit("git commit failed: Author identity unknown")
+        rs.publish = boom
+        try:
+            rc = rs.main(["--permits", permits, "--frac", fracs, "--out", str(out), "--counties", "reeves",
+                          "--from-date", "2024-01-01", "--skip-tests", "--publish"])
+        finally:
+            rs.publish = original
+        self.assertEqual(rc, 0)
+        self.assertEqual((rs.LAST_PUBLISH["attempted"], rs.LAST_PUBLISH["ok"]), (True, False))
+        self.assertIn("Author identity unknown", rs.LAST_PUBLISH["message"])
+        self.assertTrue((out / "SUMMARY.md").exists())
+        self.assertTrue((out / "water_no_delay.json").exists())
+
+    def test_publish_state_resets_on_the_next_run_and_passes_the_author_through(self):
+        permits, fracs, d = synthetic_inputs()
+        seen = {}
+        original = rs.publish
+        rs.publish = lambda out, root, branch="b", author=None: seen.setdefault("author", author) or "pushed"
+        try:
+            rs.main(["--permits", permits, "--frac", fracs, "--out", str(d / "a"), "--counties", "reeves",
+                     "--from-date", "2024-01-01", "--skip-tests", "--publish", "--publish-author", "A B <a@b.co>"])
+            self.assertEqual((rs.LAST_PUBLISH["ok"], seen["author"]), (True, "A B <a@b.co>"))
+            rs.main(["--permits", permits, "--frac", fracs, "--out", str(d / "b"), "--counties", "reeves",
+                     "--from-date", "2024-01-01", "--skip-tests"])
+            self.assertFalse(rs.LAST_PUBLISH["attempted"])
+        finally:
+            rs.publish = original
+
     def test_bad_from_date_is_rejected(self):
         permits, fracs, d = synthetic_inputs()
         with self.assertRaises(SystemExit):
@@ -173,6 +206,61 @@ class Publish(unittest.TestCase):
             rs.publish(self.out, self.repo)
         heads = subprocess.run(["git", "--git-dir", str(self.bare), "branch"], capture_output=True, text=True).stdout
         self.assertNotIn("claude/frac-results", heads)
+
+    def author_of_last_results_commit(self):
+        return self.git("--git-dir", str(self.bare), "log", "-1", "--format=%an|%ae", "claude/frac-results", cwd=self.repo).strip()
+
+    def no_identity(self):
+        """Recreate a machine where git has no author identity at all (what happened on the Mac)."""
+        cfg = self.out.parent / "empty-gitconfig"
+        cfg.write_text("[user]\n\tuseConfigOnly = true\n")
+        for k in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+            os.environ.pop(k, None)
+        saved = {k: os.environ.get(k) for k in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM")}
+        os.environ["GIT_CONFIG_GLOBAL"], os.environ["GIT_CONFIG_SYSTEM"] = str(cfg), os.devnull
+        def restore():
+            for k, v in saved.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        self.addCleanup(restore)
+
+    def test_git_really_has_no_identity_in_that_setup(self):
+        self.no_identity()
+        p = subprocess.run(["git", "var", "GIT_AUTHOR_IDENT"], cwd=self.repo, capture_output=True, text=True)
+        self.assertNotEqual(p.returncode, 0)                       # so the next test is a real reproduction
+
+    def test_publishes_with_a_labelled_bot_author_when_git_has_no_identity(self):
+        self.no_identity()
+        rs.publish(self.out, self.repo)
+        self.assertEqual(self.author_of_last_results_commit(), "|".join(rs.FALLBACK_AUTHOR))
+        self.assertIn("automated", rs.FALLBACK_AUTHOR[0])
+        self.assertTrue(rs.FALLBACK_AUTHOR[1].endswith(".invalid"))  # cannot be a real person's address
+
+    def test_an_explicit_author_wins_even_without_a_git_identity(self):
+        self.no_identity()
+        rs.publish(self.out, self.repo, author="Desk Owner <owner@example.com>")
+        self.assertEqual(self.author_of_last_results_commit(), "Desk Owner|owner@example.com")
+
+    def test_a_configured_git_identity_is_used_untouched(self):
+        rs.publish(self.out, self.repo)                              # setUp provides identity "t <t@t>"
+        self.assertEqual(self.author_of_last_results_commit(), "t|t@t")
+
+    def test_an_identity_saved_in_git_config_is_respected_not_overridden_by_the_bot(self):
+        self.no_identity()                                             # no env identity, no global identity
+        self.git("config", "user.name", "Configured Person", cwd=self.repo)
+        self.git("config", "user.email", "person@example.com", cwd=self.repo)
+        rs.publish(self.out, self.repo)
+        self.assertEqual(self.author_of_last_results_commit(), "Configured Person|person@example.com")
+
+    def test_a_malformed_author_is_refused(self):
+        for bad in ("just a name", "<only@email.com>", "Name <not-an-email>"):
+            with self.assertRaises(SystemExit):
+                rs.publish(self.out, self.repo, author=bad)
+
+    def test_the_fallback_identity_is_not_written_into_git_config(self):
+        self.no_identity()
+        rs.publish(self.out, self.repo)
+        p = subprocess.run(["git", "config", "--local", "user.name"], cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(p.stdout.strip(), "")
 
     def test_empty_output_dir_is_refused(self):
         empty = self.out.parent / "empty"

@@ -349,7 +349,7 @@ class RealCycle(Base):
     def test_publish_flag_is_passed_through_to_the_suite(self):
         seen = {}
         original = lv.rs.publish
-        lv.rs.publish = lambda out, root, branch="x": seen.setdefault("called", str(out)) or "ok"
+        lv.rs.publish = lambda out, root, branch="x", **kw: seen.setdefault("called", str(out)) or "ok"
         try:
             a_p, a_f = tf.world(seed=7, county="REEVES")
             permits_csv, frac_csv = self.root / "p.csv", self.root / "f.csv"
@@ -365,6 +365,58 @@ class RealCycle(Base):
             seen.clear()
             off.step()
             self.assertNotIn("called", seen)
+        finally:
+            lv.rs.publish = original
+
+
+class PublishFailure(Base):
+    def real_inputs(self):
+        a_p, a_f = tf.world(seed=7, county="REEVES")
+        permits_csv, frac_csv = self.root / "p.csv", self.root / "f.csv"
+        for rows, path in ((a_p, permits_csv), (a_f, frac_csv)):
+            with open(path, "w", newline="") as h:
+                w = csv.DictWriter(h, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+        return permits_csv, frac_csv
+
+    def test_a_failing_publish_does_not_fail_or_repeat_the_evaluation(self):
+        permits_csv, frac_csv = self.real_inputs()
+        original = lv.rs.publish
+        def boom(*a, **kw):
+            raise SystemExit("git commit failed: Author identity unknown")
+        lv.rs.publish = boom
+        try:
+            live = lv.Live(permits_csv, frac_csv, self.root / "out", debounce=0, clock=self.clock, quiet=True,
+                           skip_tests=True, counties="REEVES", from_date="2024-01-01", publish=True)
+            self.assertEqual(live.step(), "continue")
+            st = live.snapshot()
+            self.assertEqual(st["consecutive_failures"], 0)                  # the run COUNTS
+            self.assertEqual(st["state"], "idle")
+            self.assertTrue(st["last_result"]["publish"].startswith("failed"))
+            self.assertIn(st["last_result"]["watchdog_status"], ("OK", "WARN", "ALERT"))   # the watchdog did run
+            kinds = self.kinds(live)
+            self.assertIn("publish_failed", kinds)
+            self.assertNotIn("run_failed", kinds)
+            for _ in range(3):                                               # and it is not redone over and over
+                self.clock.advance(4000); live.step()
+            self.assertEqual(len(list((live.out / "runs").iterdir())), 1)
+        finally:
+            lv.rs.publish = original
+
+    def test_publish_state_is_reported_ok_and_off(self):
+        permits_csv, frac_csv = self.real_inputs()
+        original = lv.rs.publish
+        seen = {}
+        lv.rs.publish = lambda out, root, branch="b", author=None: seen.setdefault("author", author) or "pushed"
+        try:
+            on = lv.Live(permits_csv, frac_csv, self.root / "o1", debounce=0, clock=self.clock, quiet=True, skip_tests=True,
+                         counties="REEVES", from_date="2024-01-01", publish=True, publish_author="A B <a@b.co>")
+            on.step()
+            self.assertEqual(on.snapshot()["last_result"]["publish"], "ok")
+            self.assertEqual(seen["author"], "A B <a@b.co>")
+            off = lv.Live(permits_csv, frac_csv, self.root / "o2", debounce=0, clock=self.clock, quiet=True, skip_tests=True,
+                          counties="REEVES", from_date="2024-01-01")
+            off.step()
+            self.assertEqual(off.snapshot()["last_result"]["publish"], "off")
         finally:
             lv.rs.publish = original
 

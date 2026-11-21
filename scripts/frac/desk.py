@@ -157,17 +157,30 @@ def status_bar(state, now, color):
     return "  ·  ".join(b for b in bits if b), "up"
 
 
+def publish_problem(state):
+    pub = str(((state.get("status") or {}).get("last_result") or {}).get("publish", ""))
+    return pub if pub.startswith("failed") else None
+
+
 def risk_panel(state, color):
     w = state["watch"]
+    problem = publish_problem(state)
     if not w:
-        return [paint("── RISK · watchdog has not reported yet", "dim", color)], "UNKNOWN"
+        lines = [paint("── RISK · watchdog has not reported yet", "dim", color)]
+        if problem:
+            lines.append(f"  {paint('WARN', 'yellow', color)} publish failing; results are complete on disk ({problem[8:60]})")
+        return lines, "WARN" if problem else "UNKNOWN"
     status = w.get("status", "?")
+    if problem and status == "OK":
+        status = "WARN"
     tone = {"OK": "green", "WARN": "yellow", "ALERT": "red"}.get(status, "dim")
     lines = [paint("── RISK ", "bold", color) + paint(f" {status} ", "inv" if status != "OK" else "green", color)
              + paint(f"  run {w.get('run')}", "dim", color)]
     for c in w.get("checks", []):
         if c.get("level") in ("ALERT", "WARN"):
             lines.append(f"  {paint(c['level'], 'red' if c['level'] == 'ALERT' else 'yellow', color)} {c['message']}")
+    if problem:
+        lines.append(f"  {paint('WARN', 'yellow', color)} publish failing; results are complete on disk ({problem[8:60]})")
     return lines, status
 
 
@@ -176,7 +189,7 @@ def tape(events, n, color):
     for e in reversed(events[-n:]):
         t = (e.get("t") or "")[11:19]
         kind = e.get("event", "?")
-        tone = "red" if kind in ("run_failed", "alert", "stopped") else "green" if kind == "run_finished" else "dim"
+        tone = "red" if kind in ("run_failed", "alert", "stopped", "publish_failed") else "green" if kind == "run_finished" else "dim"
         detail = " ".join(f"{k}={v}" for k, v in e.items() if k not in ("t", "event"))[:70]
         lines.append(f"{paint(t, 'dim', color)} {paint(f'{kind:<18}', tone, color)} {detail}")
     if len(lines) == 1:

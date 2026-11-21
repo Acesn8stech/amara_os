@@ -56,13 +56,14 @@ def iso(ts):
 class Live:
     def __init__(self, permits, frac, out, state_dir=None, poll=10.0, debounce=30.0, publish=False, port=None,
                  run_on_start=True, skip_tests=False, counties=None, from_date="2016-01-01", lag_days=45,
-                 backoff_base=60.0, backoff_max=3600.0, max_failures=5, clock=time.time, run_fn=None, quiet=False):
+                 backoff_base=60.0, backoff_max=3600.0, max_failures=5, clock=time.time, run_fn=None, quiet=False,
+                 publish_author=None):
         self.permits, self.frac = Path(permits).expanduser(), Path(frac).expanduser()
         self.out = Path(out).expanduser()
         self.state_dir = Path(state_dir).expanduser() if state_dir else self.out
         self.poll, self.debounce, self.publish_flag, self.port = poll, debounce, publish, port
         self.run_on_start, self.skip_tests, self.counties = run_on_start, skip_tests, counties
-        self.from_date, self.lag_days = from_date, lag_days
+        self.from_date, self.lag_days, self.publish_author = from_date, lag_days, publish_author
         self.backoff_base, self.backoff_max, self.max_failures = backoff_base, backoff_max, max_failures
         self.clock, self.run_fn, self.quiet = clock, run_fn or default_run, quiet
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -210,6 +211,9 @@ class Live:
             self.status["last_result"] = result
             (self.out / "ALERT.md").unlink(missing_ok=True)   # our own "stopped after failures" note is now out of date
             self.emit("run_finished", **result)
+            if str(result.get("publish", "")).startswith("failed"):
+                self.emit("publish_failed", message=result["publish"][:300],
+                          note="results are complete on disk; only the upload failed, so the run still counts")
             if result.get("watchdog_status") == "ALERT":
                 self.emit("alert", message="watchdog ALERT: see ALERT.md; a person must review", folder=str(self.out / "watch"))
             self._set("idle")
@@ -309,6 +313,8 @@ def default_run(live):
         args.append("--skip-tests")
     if live.publish_flag:
         args.append("--publish")
+        if live.publish_author:
+            args += ["--publish-author", live.publish_author]
     quiet = contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO())
     with quiet[0], quiet[1]:
         rc = rs.main(args)
@@ -317,7 +323,9 @@ def default_run(live):
     with contextlib.redirect_stdout(io.StringIO()):
         wrc = wd.main(["--results", str(live.out / "runs"), "--out", str(live.out / "watch"),
                        "--inputs", str(live.permits), str(live.frac)])
-    return {"run": run_dir.name, "watchdog_exit": wrc, "watchdog_status": WATCH_EXIT[wrc]}
+    pub = rs.LAST_PUBLISH
+    publish_state = "off" if not pub["attempted"] else "ok" if pub["ok"] else f"failed: {pub['message']}"
+    return {"run": run_dir.name, "watchdog_exit": wrc, "watchdog_status": WATCH_EXIT[wrc], "publish": publish_state}
 
 
 def main(argv=None):
@@ -336,10 +344,11 @@ def main(argv=None):
     ap.add_argument("--from-date", default="2016-01-01")
     ap.add_argument("--lag-days", type=int, default=45)
     ap.add_argument("--max-failures", type=int, default=5)
+    ap.add_argument("--publish-author", help='author for results commits, e.g. "Scott <you@example.com>"')
     args = ap.parse_args(argv)
     live = Live(args.permits, args.frac, args.out, args.state_dir, args.poll, args.debounce, args.publish, args.port,
                 not args.no_run_on_start, args.skip_tests, args.counties, args.from_date, args.lag_days,
-                max_failures=args.max_failures)
+                max_failures=args.max_failures, publish_author=args.publish_author)
     return live.serve_forever()
 
 

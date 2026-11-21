@@ -22,11 +22,11 @@ def county(model, base, tmodel=0.25, tbase=0.4, match=0.8, bias=0.0):
                    "turning_point_windows": {"n": 5, "model_median_abs_error": tmodel, "baseline_median_abs_error": tbase}}}
 
 
-def make_dir(state="idle", heartbeat_ago=5, water=None, sand=None, watch="OK", events=(), checks=()):
+def make_dir(state="idle", heartbeat_ago=5, water=None, sand=None, watch="OK", events=(), checks=(), publish="ok", no_watch=False):
     d = Path(tempfile.mkdtemp())
     (d / "live_status.json").write_text(json.dumps({
         "pid": 1, "state": state, "started_at": iso(7200), "last_check": iso(heartbeat_ago), "last_run_finished": iso(240),
-        "last_result": {"watchdog_status": watch}, "consecutive_failures": 0, "publish": True, "http_port": 8765}))
+        "last_result": {"watchdog_status": watch, "publish": publish}, "consecutive_failures": 0, "publish": True, "http_port": 8765}))
     run = d / "runs" / "20261121-130000"
     run.mkdir(parents=True)
     (run / "water_no_delay.json").write_text(json.dumps(water if water is not None else {
@@ -34,7 +34,8 @@ def make_dir(state="idle", heartbeat_ago=5, water=None, sand=None, watch="OK", e
         "WARD": county(0.40, 0.394)}))
     (run / "sand_no_delay.json").write_text(json.dumps(sand if sand is not None else {"UPTON": county(0.181, 0.332)}))
     (d / "watch").mkdir()
-    (d / "watch" / "status.json").write_text(json.dumps({"status": watch, "run": "20261121-130000", "checks": list(checks)}))
+    if not no_watch:
+        (d / "watch" / "status.json").write_text(json.dumps({"status": watch, "run": "20261121-130000", "checks": list(checks)}))
     (d / "live_events.jsonl").write_text("\n".join(json.dumps(e) for e in events) + ("\n" if events else ""))
     return d
 
@@ -131,6 +132,30 @@ class StatusAndRisk(unittest.TestCase):
         text, h, r = frame(alert)
         self.assertEqual(desk.exit_code(h, r), 2)
         self.assertIn("inputs 100 days old", text)
+
+    def test_a_failing_publish_is_a_warning_not_an_outage(self):
+        text, h, r = frame(make_dir(publish="failed: git commit failed: Author identity unknown"))
+        self.assertEqual(desk.exit_code(h, r), 1)
+        self.assertIn("publish failing; results are complete on disk", text)
+        self.assertIn("Author identity unknown", text)
+        self.assertTrue(all(len(l) <= 110 for l in text.splitlines()))       # and nothing important is cut off
+        self.assertIn("● LIVE", text)
+
+    def test_a_failing_publish_never_hides_an_alert(self):
+        d = make_dir(watch="ALERT", publish="failed: x", checks=[{"level": "ALERT", "check": "c", "message": "bad", "action": ""}])
+        _, h, r = frame(d)
+        self.assertEqual(desk.exit_code(h, r), 2)
+
+    def test_publish_ok_or_off_adds_no_warning(self):
+        for state in ("ok", "off"):
+            text, h, r = frame(make_dir(publish=state))
+            self.assertEqual(desk.exit_code(h, r), 0, state)
+            self.assertNotIn("publish failing; results are complete on disk", text)
+
+    def test_a_failing_publish_shows_even_before_the_watchdog_reports(self):
+        text, h, r = frame(make_dir(publish="failed: nope", no_watch=True))
+        self.assertEqual(desk.exit_code(h, r), 1)
+        self.assertIn("publish failing; results are complete on disk", text)
 
     def test_down_outranks_an_alert_in_the_exit_code(self):
         self.assertEqual(desk.exit_code("down", "ALERT"), 3)

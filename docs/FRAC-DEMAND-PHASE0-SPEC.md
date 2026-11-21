@@ -252,3 +252,17 @@ Seven counties (Reeves, Loving, Midland, Martin, Howard, Upton, Culberson), v2 v
   one-shot (renamed to STOP.handled on stop) so a restart is not blocked; a successful run clears the service's own
   old "stopped after failures" note.
 - No real evaluation result exists yet from the live service.
+
+## 18. First real live run inside God Mode (2026-11-21, 13:41 PST)
+
+- The evaluation completed on real data from `~/amara-god-mode-frac` (214 tests passed there first). Desk board,
+  no filing delay, model v2 vs trailing average on 13-week totals: WATER clearly better in 7 of 10 counties (Culberson
+  +47%, Upton +45%, Howard +40%), flat in Reeves (+9%) and Ward (-2%), clearly worse in Pecos (-61%, only 36% of
+  permits match a frac). SAND clearly better in 7 of 10 (Midland +56%, Upton +45%); Reeves (-1%) and Pecos (-9%) flat.
+  These match the earlier hand-run results.
+- Bug found: the run was marked FAILED because the publish step's `git commit` had no author identity on the Mac.
+  A failed upload was allowed to fail a good evaluation, so the service kept redoing a 12-minute run and would have
+  stopped itself. Fixed: publishing is non-fatal (results stay complete on disk, the run counts, the watchdog still
+  runs, the desk shows a WARN "publish failing"); the results commit uses git's own identity when there is one, an
+  explicit `--publish-author` if given, and otherwise a clearly-labelled bot identity that is never written into git
+  config. A configured identity is never overridden.
