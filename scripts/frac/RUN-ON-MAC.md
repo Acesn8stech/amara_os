@@ -30,6 +30,11 @@ means proppant is recorded under a purpose the matcher does not recognize. Paste
 Look at "percent_method_calibration": the median of "estimate_divided_by_recorded_mass" near 1.0 with a
 tight p25-p75 means the percent estimate is trustworthy. Do NOT turn it on until Claude has read this.
 
+## 3d. Short diagnostic (use this one; the full one prints a wall of text)
+    python3 scripts/frac/adapters/fracfocus_to_frac.py --zip ~/frac-data/fracfocus/FracFocusCSV.zip --diagnose --brief
+Shows coverage for 2013-now and the last 3 years, the typical pounds-per-gallon for recorded vs derived jobs,
+and where large sand hides when it is not labeled proppant.
+
 ## 4. Build frac.csv (streams the zip, never extracts it; Texas only)
     python3 scripts/frac/adapters/fracfocus_to_frac.py --zip ~/frac-data/fracfocus/FracFocusCSV.zip --output ~/frac-data/work/frac.csv
 It prints which job-key column it used. If it stops on a header mismatch, tell Claude.

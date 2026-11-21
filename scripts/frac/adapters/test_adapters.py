@@ -357,6 +357,54 @@ class DateSanityAndPercentMethod(unittest.TestCase):
         self.assertEqual(res["by_year"]["2022"]["matched_no_mass_but_derivable_from_percent"], 1)
 
 
+class PlausibilityAndBrief(unittest.TestCase):
+    def convert(self, rows_, **kw):
+        out = str(Path(tempfile.mkdtemp()) / "frac.csv")
+        res = ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), out, **kw)
+        with open(out) as handle:
+            return res, {r["api"]: r for r in csv.DictReader(handle)}
+
+    def test_implausible_derived_proppant_is_left_unknown(self):
+        # 99% proppant over 1% water would imply ~800 lb per gallon of water
+        rows_ = [row2("x", "6/1/2022", "42389480010000", "1000000", "Carrier/Base Fluid", "Water", "", "1"),
+                 row2("x", "6/1/2022", "42389480010000", "1000000", "Proppant", "Silica", "", "99")]
+        res, out = self.convert(rows_, derive=True)
+        self.assertEqual(out["42389480010000"]["proppant_lb"], "")
+        self.assertEqual(res["stats"]["rejected_implausible_derived_proppant"], 1)
+
+    def test_guard_limit_is_adjustable(self):
+        rows_ = [row2("y", "6/1/2022", "42389480020000", "1000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("y", "6/1/2022", "42389480020000", "1000000", "Proppant", "Silica", "", "10")]   # ~1.04 lb/gal
+        _, ok = self.convert(rows_, derive=True)
+        self.assertNotEqual(ok["42389480020000"]["proppant_lb"], "")
+        _, tight = self.convert(rows_, derive=True, max_lb_per_gal=0.5)
+        self.assertEqual(tight["42389480020000"]["proppant_lb"], "")
+
+    def test_brief_diagnose_finds_large_sand_under_another_label(self):
+        rows_ = [row2("h1", "6/1/2022", "42389480100000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("h1", "6/1/2022", "42389480100000", "5000000", "Additive", "Crystalline Silica", "9000000", "10"),
+                 row2("h2", "6/1/2022", "42389480110000", "5000000", "Proppant", "Crystalline Silica", "8000000", "10"),
+                 row2("h3", "6/1/2022", "42389480120000", "5000000", "Breaker", "Crystalline Silica", "50", "0.0001")]  # trace silica
+        res = ffz.diagnose(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), brief=True)
+        self.assertEqual(res["where_large_sand_hides_when_not_labeled_proppant"], {"Additive": 1})   # trace one ignored
+        self.assertNotIn("by_year", res)
+        self.assertIn("jobs_2013_to_now", res)
+        self.assertEqual(res["jobs_2013_to_now"]["jobs"], 3)
+        self.assertEqual(res["jobs_2013_to_now"]["large_sand_under_other_label_and_no_proppant_mass"], 1)
+
+    def test_lb_per_gallon_distributions_split_recorded_and_derived(self):
+        rows_ = [row2("r1", "6/1/2022", "42389480200000", "4000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("r1", "6/1/2022", "42389480200000", "4000000", "Proppant", "Silica", "8000000", "10"),   # 2.0 lb/gal recorded
+                 row2("d1", "6/1/2022", "42389480210000", "4000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("d1", "6/1/2022", "42389480210000", "4000000", "Proppant", "Silica", "", "10")]          # derived
+        res = ffz.diagnose(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), brief=True)
+        d = res["lb_proppant_per_gal_base_water"]
+        self.assertEqual(d["recorded_jobs"]["n"], 1)
+        self.assertEqual(d["recorded_jobs"]["median"], 2.0)
+        self.assertEqual(d["derived_only_jobs"]["n"], 1)
+        self.assertAlmostEqual(d["derived_only_jobs"]["median"], 8.34 * 10 / 80, places=2)
+
+
 class EndToEndWithCore(unittest.TestCase):
     def test_adapter_output_joins_in_the_core(self):
         """8-digit RRC API and 14-digit FracFocus API must meet at the same well."""
