@@ -1,0 +1,526 @@
+"""Tests for the two adapters. Run: python3 -m unittest scripts/frac/adapters/test_adapters.py -v
+
+LIMIT, stated plainly: fixtures are built from the RRC manual's layout and the FracFocus
+dictionary's column names, NOT copied from the real downloaded files (the build sandbox
+cannot reach them). They prove the code does what the layout says; the real-file check is
+the runtime sanity gate plus the 10-row hand check on Scott's Mac."""
+import csv, importlib.util, io, json, tempfile, unittest, zipfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+daf = load("daf", HERE / "daf318_to_permits.py")
+ffz = load("ffz", HERE / "fracfocus_to_frac.py")
+core = load("core", HERE.parent / "frac_forecast.py")
+
+# Positions typed independently from the adapter (1-based start, length), per the manual.
+POS = [(1, 7, "permit_number"), (12, 13, "county"), (25, 3, "api_county"), (28, 5, "api_unique"),
+       (33, 6, "op_no"), (39, 32, "op_name"), (71, 32, "lease"), (103, 8, "date"), (111, 5, "depth")]
+
+
+def record(length=354, **kw):
+    vals = {"permit_number": "0912345", "county": "REEVES", "api_county": "389", "api_unique": "45678",
+            "op_no": "123456", "op_name": "TEST OPERATING LLC", "lease": "SMITH UNIT", "date": "20240315",
+            "depth": "18500"}
+    vals.update(kw)
+    buf = [" "] * length
+    for start, ln, name in POS:
+        text = str(vals[name])[:ln].ljust(ln)
+        buf[start - 1:start - 1 + ln] = list(text)
+    return "".join(buf)
+
+
+def write_lines(lines, eol="\n"):
+    path = Path(tempfile.mkdtemp()) / "daf318"
+    path.write_bytes((eol.join(lines) + eol).encode("latin-1"))
+    return str(path)
+
+
+class Daf318(unittest.TestCase):
+    def test_good_record_fields(self):
+        row, why = daf.parse_record(record())
+        self.assertIsNone(why)
+        self.assertEqual(row["api"], "38945678")
+        self.assertEqual(row["permit_date"], "2024-03-15")
+        self.assertEqual(row["operator"], "TEST OPERATING LLC")
+        self.assertEqual(row["county"], "REEVES")
+        self.assertEqual(row["total_depth_ft"], "18500")
+        self.assertEqual(row["lateral_ft"], "")                      # never invented
+        self.assertTrue(row["lateral_basis"].startswith("UNKNOWN"))
+
+    def test_manual_length_360_accepted_and_353_rejected(self):
+        self.assertIsNotNone(daf.parse_record(record(360))[0])
+        self.assertEqual(daf.parse_record(record(353))[1], "bad_length")
+
+    def test_bad_api_and_bad_dates_rejected_with_reason(self):
+        self.assertEqual(daf.parse_record(record(api_unique="4A678"))[1], "bad_api")
+        self.assertEqual(daf.parse_record(record(date="00000000"))[1], "bad_issue_date")
+        self.assertEqual(daf.parse_record(record(date="20241345"))[1], "bad_issue_date")
+        self.assertEqual(daf.parse_record(record(date="20240230"))[1], "bad_issue_date")   # no Feb 30
+        self.assertEqual(daf.parse_record(record(date="20240229"))[0]["permit_date"], "2024-02-29")  # leap day ok
+
+    def test_zero_total_depth_is_blank_not_zero(self):
+        self.assertEqual(daf.parse_record(record(depth="00000"))[0]["total_depth_ft"], "")
+
+    def test_crlf_and_county_filter_and_counts(self):
+        # the sanity gate needs >=95% good records in its sample, so build a mostly-good file
+        out = str(Path(tempfile.mkdtemp()) / "p.csv")
+        good = [record(api_unique=f"{i:05d}") for i in range(50)] + [record(county="PECOS", api_county="371")] + [record(api_unique="XXXXX")]
+        path = write_lines(good, eol="\r\n")
+        res = daf.convert(path, out, county="reeves")
+        self.assertEqual(res["rows_written"], 50)
+        self.assertEqual(res["rejected"], {"bad_api": 1})
+        with open(out) as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual({r["county"] for r in rows}, {"REEVES"})
+
+    def test_sanity_gate_stops_on_wrong_layout(self):
+        path = write_lines(["X" * 80 for _ in range(20)])
+        with self.assertRaises(SystemExit) as cm:
+            daf.sanity_check(path)
+        self.assertIn("does not match the layout", str(cm.exception))
+
+    def test_empty_file_stops(self):
+        with self.assertRaises(SystemExit):
+            daf.sanity_check(write_lines([]))
+
+    def test_probe_runs(self):
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            daf.probe(write_lines([record()]))
+        self.assertIn("county_name", buf.getvalue())
+        self.assertIn("'REEVES'", buf.getvalue())
+
+
+HEADER = ["UploadKey", "JobStartDate", "JobEndDate", "APINumber", "StateName", "CountyName", "OperatorName",
+          "WellName", "Latitude", "Longitude", "TotalBaseWaterVolume", "Purpose", "IngredientName", "MassIngredient"]
+
+
+def row(key, start, api, state, county, op, water, purpose, mass):
+    return [key, start, start, api, state, county, op, "WELL 1", "31.4", "-103.6", water, purpose, "x", mass]
+
+
+def make_zip(members):
+    path = Path(tempfile.mkdtemp()) / "FracFocusCSV.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, (header, rows) in members.items():
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(header)
+            w.writerows(rows)
+            zf.writestr(name, buf.getvalue())
+        zf.writestr("readme csv.txt", "dictionary")
+    return str(path)
+
+
+ROWS = [
+    row("u1", "3/14/2023 12:00:00 AM", "42-389-45678-00-00", "Texas", "Reeves", 'Test, "Quoted" Op', "5000000", "Carrier/Base Fluid", ""),
+    row("u1", "3/14/2023 12:00:00 AM", "42-389-45678-00-00", "Texas", "Reeves", 'Test, "Quoted" Op', "5000000", "Proppant", "1,000"),
+    row("u1", "3/14/2023 12:00:00 AM", "42-389-45678-00-00", "Texas", "Reeves", 'Test, "Quoted" Op', "5000000", "Proppant - Natural", "2500.5"),
+    row("u2", "2023-04-01", "42389456790000", "Texas", "Reeves", "OP B", "", "Proppant", ""),         # no water, no mass
+    row("u3", "5/1/2023", "42389456800000", "Texas", "Reeves", "OP C", "4000000", "Surfactant", "10"),  # no proppant rows
+    row("u4", "5/2/2023", "30015000010000", "New Mexico", "Eddy", "OP D", "1", "Proppant", "5"),       # not Texas
+    row("u5", "garbage", "42389456810000", "Texas", "Reeves", "OP E", "1", "Proppant", "5"),          # bad date
+    row("u6", "6/1/2023", "42371456820000", "Texas", "Pecos", "OP F", "3000000", "Proppant", "7000"),
+]
+
+
+class FracFocus(unittest.TestCase):
+    def run_convert(self, members, **kw):
+        out = str(Path(tempfile.mkdtemp()) / "frac.csv")
+        res = ffz.convert(make_zip(members), out, **kw)
+        with open(out) as handle:
+            return res, {r["api"]: r for r in csv.DictReader(handle)}
+
+    def test_job_aggregation_and_units(self):
+        res, rows = self.run_convert({"FracFocusRegistry_1.csv": (HEADER, ROWS)})
+        a = rows["42389456780000"]
+        self.assertEqual(a["frac_start"], "2023-03-14")
+        self.assertEqual(float(a["water_gal"]), 5000000.0)
+        self.assertEqual(float(a["proppant_lb"]), 3500.5)           # "1,000" + 2500.5, counted once per row
+        self.assertEqual(res["job_key_used"], "UploadKey")
+
+    def test_unknown_is_blank_never_zero(self):
+        _, rows = self.run_convert({"FracFocusRegistry_1.csv": (HEADER, ROWS)})
+        self.assertEqual(rows["42389456790000"]["water_gal"], "")
+        self.assertEqual(rows["42389456790000"]["proppant_lb"], "")  # proppant rows but no mass
+        self.assertEqual(rows["42389456800000"]["proppant_lb"], "")  # no proppant rows at all
+        self.assertEqual(float(rows["42389456800000"]["water_gal"]), 4000000.0)
+
+    def test_zero_water_volume_is_unknown_not_zero(self):
+        rows_ = [row("z1", "7/1/2023", "42389456900000", "Texas", "Reeves", "OP Z", "0", "Proppant", "100"),
+                 row("z2", "7/2/2023", "42389456910000", "Texas", "Reeves", "OP Z", "abc", "Proppant", "100")]
+        res, out = self.run_convert({"FracFocusRegistry_1.csv": (HEADER, rows_)})
+        self.assertEqual(out["42389456900000"]["water_gal"], "")
+        self.assertEqual(out["42389456910000"]["water_gal"], "")      # non-numeric
+        self.assertEqual(res["stats"]["water_unknown"], 2)
+
+    def test_texas_only_and_rejects_counted(self):
+        res, rows = self.run_convert({"FracFocusRegistry_1.csv": (HEADER, ROWS)})
+        self.assertNotIn("30015000010000", rows)
+        self.assertNotIn("42389456810000", rows)                     # bad date
+        self.assertEqual(res["stats"]["skipped_not_texas"], 1)
+        self.assertEqual(res["stats"]["rejected_bad_start_date"], 1)
+
+    def test_county_filter(self):
+        _, rows = self.run_convert({"FracFocusRegistry_1.csv": (HEADER, ROWS)}, county="pecos")
+        self.assertEqual(set(rows), {"42371456820000"})
+
+    def test_job_spanning_two_members_is_one_job(self):
+        r1 = [ROWS[0], ROWS[1]]
+        r2 = [ROWS[2]]
+        res, rows = self.run_convert({"FracFocusRegistry_1.csv": (HEADER, r1), "FracFocusRegistry_2.csv": (HEADER, r2)})
+        self.assertEqual(res["jobs_written"], 1)
+        self.assertEqual(float(rows["42389456780000"]["proppant_lb"]), 3500.5)
+
+    def test_water_conflict_within_job_is_counted_first_kept(self):
+        rows_ = [ROWS[0], row("u1", "3/14/2023", "42-389-45678-00-00", "Texas", "Reeves", "X", "9999999", "Proppant", "5")]
+        res, out = self.run_convert({"FracFocusRegistry_1.csv": (HEADER, rows_)})
+        self.assertEqual(res["stats"]["job_water_conflicts"], 1)
+        self.assertEqual(float(out["42389456780000"]["water_gal"]), 5000000.0)
+
+    def test_header_mismatch_stops_loudly(self):
+        bad = [c for c in HEADER if c != "TotalBaseWaterVolume"]
+        with self.assertRaises(SystemExit) as cm:
+            self.run_convert({"FracFocusRegistry_1.csv": (bad, [[""] * len(bad)])})
+        self.assertIn("TotalBaseWaterVolume", str(cm.exception))
+
+    def test_no_job_key_column_stops_unless_given(self):
+        header = [c for c in HEADER if c != "UploadKey"]
+        rows_ = [r[1:] for r in ROWS]
+        with self.assertRaises(SystemExit):
+            self.run_convert({"FracFocusRegistry_1.csv": (header, rows_)})
+        res, _ = self.run_convert({"FracFocusRegistry_1.csv": (header, rows_)}, job_key="APINumber")
+        self.assertEqual(res["job_key_used"], "APINumber")
+
+    def test_list_purposes(self):
+        with zipfile.ZipFile(make_zip({"FracFocusRegistry_1.csv": (HEADER, ROWS)})) as zf:
+            counts = ffz.list_purposes(zf)
+        self.assertEqual(counts["Proppant"], 5)   # u1, u2, u4, u5, u6 each have one exact "Proppant" row
+        self.assertIn("Proppant - Natural", counts)
+
+    def test_zip_is_streamed_not_extracted(self):
+        zpath = make_zip({"FracFocusRegistry_1.csv": (HEADER, ROWS)})
+        before = set(Path(zpath).parent.iterdir())
+        self.run_convert({"FracFocusRegistry_1.csv": (HEADER, ROWS)})
+        self.assertEqual(set(Path(zpath).parent.iterdir()), before)
+
+
+class ProppantMatching(unittest.TestCase):
+    def test_propping_agent_and_typos_count_as_proppant(self):
+        for p in ("Proppant", "PROPPANT", "Propping Agent", "propping agent", "Proppan", "Proppant (30/50 Mesh)",
+                  "Resin coated proppant", "Proppant - Natural", "Fracturing Sand, Propping Agent"):
+            self.assertTrue(ffz.is_proppant(p), p)
+
+    def test_additives_about_proppant_do_not_count(self):
+        for p in ("Proppant Transport Polymer", "Proppant Binder 1", "Proppant Resin Coat Activator",
+                  "Proppant Suspending Agent", "Proppant Carrier Fluid", "PROPPANT SHIELD",
+                  "Activator for TURBOprop Proppant", "Proppant/Friction Reduction"):
+            self.assertFalse(ffz.is_proppant(p), p)
+
+    def test_multi_value_purpose_judged_per_token(self):
+        self.assertTrue(ffz.is_proppant("Additive, Breaker, Friction Reducer, Gelling Agent, Proppant, Surfactant"))
+        self.assertFalse(ffz.is_proppant("Additive, Breaker, Friction Reducer, Gelling Agent, Surfactant"))
+        self.assertFalse(ffz.is_proppant("Additive, Proppant Binder 1, Surfactant"))
+        self.assertTrue(ffz.is_proppant("Acid, Friction Reducer, Chelating Agent, Propping Agent"))
+
+    def test_unrelated_and_empty(self):
+        self.assertFalse(ffz.is_proppant("Friction Reducer"))
+        self.assertFalse(ffz.is_proppant(""))
+        self.assertFalse(ffz.is_proppant(None))
+
+    def test_propping_agent_job_gets_proppant_mass_through_the_adapter(self):
+        rows_ = [row("p1", "8/1/2022", "42389457000000", "Texas", "Reeves", "HAL CO", "6000000", "Propping Agent", "9000"),
+                 row("p1", "8/1/2022", "42389457000000", "Texas", "Reeves", "HAL CO", "6000000", "Propping Agent", "1000")]
+        out = str(Path(tempfile.mkdtemp()) / "frac.csv")
+        res = ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER, rows_)}), out)
+        with open(out) as handle:
+            r = list(csv.DictReader(handle))[0]
+        self.assertEqual(float(r["proppant_lb"]), 10000.0)
+
+    def test_multi_value_rows_are_counted_in_stats(self):
+        rows_ = [row("m1", "8/1/2022", "42389457100000", "Texas", "Reeves", "OP M", "6000000",
+                     "Additive, Friction Reducer, Proppant", "500")]
+        out = str(Path(tempfile.mkdtemp()) / "frac.csv")
+        res = ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER, rows_)}), out)
+        self.assertEqual(res["stats"]["proppant_rows_from_multi_value_purpose"], 1)
+
+
+class Diagnose(unittest.TestCase):
+    def test_diagnose_breaks_unknowns_down_by_year(self):
+        h = HEADER
+        rows_ = [
+            row("d1", "5/1/2022", "42389460010000", "Texas", "Reeves", "A", "5000000", "Proppant", "100"),
+            row("d1", "5/1/2022", "42389460010000", "Texas", "Reeves", "A", "5000000", "Water", ""),
+            row("d2", "6/1/2022", "42389460020000", "Texas", "Reeves", "B", "5000000", "Sand Thing", "200"),     # sand named, purpose not matched
+            row("d3", "6/1/2012", "42389460030000", "Texas", "Reeves", "C", "5000000", "", ""),                  # header-only era
+            row("d4", "6/1/2022", "30015000010000", "New Mexico", "Eddy", "D", "1", "Proppant", "5"),
+            row("d5", "7/1/2022", "42389460050000", "Texas", "Reeves", "E", "5000000", "Proppant", ""),   # labeled proppant, no mass
+        ]
+        for r in rows_:
+            r[12] = "Crystalline Silica" if r[11] == "Sand Thing" else r[12]
+        zpath = make_zip({"FracFocusRegistry_1.csv": (h, rows_)})
+        res = ffz.diagnose(zpath)
+        self.assertEqual(res["jobs_total"], 4)                      # New Mexico excluded
+        y22, y12 = res["by_year"]["2022"], res["by_year"]["2012"]
+        self.assertEqual(y22["jobs"], 3)
+        self.assertEqual(y22["proppant_purpose_match"], 2)          # d1 and d5
+        self.assertEqual(y22["proppant_purpose_match_with_mass"], 1)  # only d1 has a mass
+        self.assertEqual(y22["sand_like_ingredient_with_mass"], 1)
+        self.assertEqual(y12["any_ingredient_mass"], 0)
+        self.assertEqual(res["top_single_value_purposes_containing_propp"], {"Proppant": 2})
+
+
+HEADER2 = HEADER + ["PercentHFJob"]
+
+
+def row2(key, start, api, water, purpose, ingredient, mass, pct, state="Texas", county="Reeves", op="OP"):
+    r = row(key, start, api, state, county, op, water, purpose, mass)
+    r[12] = ingredient
+    return r + [pct]
+
+
+class DateSanityAndPercentMethod(unittest.TestCase):
+    def run_convert(self, rows_, **kw):
+        out = str(Path(tempfile.mkdtemp()) / "frac.csv")
+        res = ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), out, **kw)
+        with open(out) as handle:
+            return res, {r["api"]: r for r in csv.DictReader(handle)}
+
+    def test_implausible_years_are_rejected_and_counted(self):
+        rows_ = [row2("a", "5/1/1955", "42389470010000", "1000000", "Proppant", "Sand", "10", ""),
+                 row2("b", "1/1/3012", "42389470020000", "1000000", "Proppant", "Sand", "10", ""),
+                 row2("c", "6/1/2001", "42389470030000", "1000000", "Proppant", "Sand", "10", ""),
+                 row2("d", "6/1/2022", "42389470040000", "1000000", "Proppant", "Sand", "10", "")]
+        res, out = self.run_convert(rows_)
+        self.assertEqual(set(out), {"42389470030000", "42389470040000"})      # 2001 kept, 1955 and 3012 dropped
+        self.assertEqual(res["stats"]["rejected_implausible_start_date"], 2)
+
+    def test_percent_method_only_when_asked_and_labeled(self):
+        rows_ = [row2("p", "6/1/2022", "42389470100000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("p", "6/1/2022", "42389470100000", "5000000", "Proppant", "Silica", "", "10")]
+        res, out = self.run_convert(rows_)                                   # off by default
+        self.assertEqual(out["42389470100000"]["proppant_lb"], "")
+        self.assertEqual(out["42389470100000"]["proppant_basis"], "")
+        res, out = self.run_convert(rows_, derive=True)
+        r = out["42389470100000"]
+        self.assertAlmostEqual(float(r["proppant_lb"]), 5000000 * 8.34 * 10 / 80, places=0)
+        self.assertTrue(r["proppant_basis"].startswith("DERIVED"))
+        self.assertEqual(res["stats"]["proppant_derived_from_percent"], 1)
+
+    def test_recorded_mass_beats_derived_estimate(self):
+        rows_ = [row2("q", "6/1/2022", "42389470200000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("q", "6/1/2022", "42389470200000", "5000000", "Proppant", "Silica", "4000000", "10")]
+        res, out = self.run_convert(rows_, derive=True)
+        r = out["42389470200000"]
+        self.assertEqual(float(r["proppant_lb"]), 4000000.0)
+        self.assertTrue(r["proppant_basis"].startswith("RECORD"))
+        self.assertNotIn("proppant_derived_from_percent", res["stats"])
+
+    def test_percent_method_needs_water_percent_and_volume(self):
+        rows_ = [row2("n1", "6/1/2022", "42389470300000", "5000000", "Proppant", "Silica", "", "10"),     # no water row
+                 row2("n2", "6/1/2022", "42389470310000", "", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("n2", "6/1/2022", "42389470310000", "", "Proppant", "Silica", "", "10")]            # no water volume
+        _, out = self.run_convert(rows_, derive=True)
+        self.assertEqual(out["42389470300000"]["proppant_lb"], "")
+        self.assertEqual(out["42389470310000"]["proppant_lb"], "")
+
+    def test_derive_flag_without_percent_column_stops(self):
+        with self.assertRaises(SystemExit) as cm:
+            ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER, ROWS)}),
+                        str(Path(tempfile.mkdtemp()) / "x.csv"), derive=True)
+        self.assertIn("PercentHFJob", str(cm.exception))
+
+    def test_water_name_detection(self):
+        for n in ("Water", "water", "Fresh Water", "Produced Water", "Water (Including Mix Water Supplied by Client)"):
+            self.assertTrue(ffz.is_water_name(n), n)
+        for n in ("Crystalline Silica", "Hydrochloric acid", "", None):
+            self.assertFalse(ffz.is_water_name(n), n)
+
+    def test_diagnose_reports_percent_method_calibration(self):
+        rows_ = [row2("c1", "6/1/2022", "42389470400000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("c1", "6/1/2022", "42389470400000", "5000000", "Proppant", "Silica", "5000000", "10"),
+                 row2("c2", "6/1/2022", "42389470410000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("c2", "6/1/2022", "42389470410000", "5000000", "Proppant", "Silica", "", "10")]   # derivable, no mass
+        res = ffz.diagnose(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}))
+        cal = res["percent_method_calibration"]
+        self.assertEqual(cal["jobs_with_both_recorded_mass_and_percent_estimate"], 1)
+        self.assertAlmostEqual(cal["estimate_divided_by_recorded_mass"]["median"], 5000000 * 8.34 * 10 / 80 / 5000000, places=2)
+        self.assertEqual(res["by_year"]["2022"]["matched_no_mass_but_derivable_from_percent"], 1)
+
+
+class PlausibilityAndBrief(unittest.TestCase):
+    def convert(self, rows_, **kw):
+        out = str(Path(tempfile.mkdtemp()) / "frac.csv")
+        res = ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), out, **kw)
+        with open(out) as handle:
+            return res, {r["api"]: r for r in csv.DictReader(handle)}
+
+    def test_implausible_derived_proppant_is_left_unknown(self):
+        # 99% proppant over 1% water would imply ~800 lb per gallon of water
+        rows_ = [row2("x", "6/1/2022", "42389480010000", "1000000", "Carrier/Base Fluid", "Water", "", "1"),
+                 row2("x", "6/1/2022", "42389480010000", "1000000", "Proppant", "Silica", "", "99")]
+        res, out = self.convert(rows_, derive=True)
+        self.assertEqual(out["42389480010000"]["proppant_lb"], "")
+        self.assertEqual(res["stats"]["rejected_implausible_derived_proppant"], 1)
+
+    def test_guard_limit_is_adjustable(self):
+        rows_ = [row2("y", "6/1/2022", "42389480020000", "1000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("y", "6/1/2022", "42389480020000", "1000000", "Proppant", "Silica", "", "10")]   # ~1.04 lb/gal
+        _, ok = self.convert(rows_, derive=True)
+        self.assertNotEqual(ok["42389480020000"]["proppant_lb"], "")
+        _, tight = self.convert(rows_, derive=True, max_lb_per_gal=0.5)
+        self.assertEqual(tight["42389480020000"]["proppant_lb"], "")
+
+    def test_brief_diagnose_finds_large_sand_under_another_label(self):
+        rows_ = [row2("h1", "6/1/2022", "42389480100000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("h1", "6/1/2022", "42389480100000", "5000000", "Additive", "Crystalline Silica", "9000000", "10"),
+                 row2("h2", "6/1/2022", "42389480110000", "5000000", "Proppant", "Crystalline Silica", "8000000", "10"),
+                 row2("h3", "6/1/2022", "42389480120000", "5000000", "Breaker", "Crystalline Silica", "50", "0.0001")]  # trace silica
+        res = ffz.diagnose(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), brief=True)
+        self.assertEqual(res["where_large_sand_hides_when_not_labeled_proppant"], {"Additive": 1})   # trace one ignored
+        self.assertNotIn("by_year", res)
+        self.assertIn("jobs_2013_to_now", res)
+        self.assertEqual(res["jobs_2013_to_now"]["jobs"], 3)
+        self.assertEqual(res["jobs_2013_to_now"]["large_sand_under_other_label_and_no_proppant_mass"], 1)
+
+    def test_lb_per_gallon_distributions_split_recorded_and_derived(self):
+        rows_ = [row2("r1", "6/1/2022", "42389480200000", "4000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("r1", "6/1/2022", "42389480200000", "4000000", "Proppant", "Silica", "8000000", "10"),   # 2.0 lb/gal recorded
+                 row2("d1", "6/1/2022", "42389480210000", "4000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("d1", "6/1/2022", "42389480210000", "4000000", "Proppant", "Silica", "", "10")]          # derived
+        res = ffz.diagnose(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), brief=True)
+        d = res["lb_proppant_per_gal_base_water"]
+        self.assertEqual(d["recorded_jobs"]["n"], 1)
+        self.assertEqual(d["recorded_jobs"]["median"], 2.0)
+        self.assertEqual(d["derived_only_jobs"]["n"], 1)
+        self.assertAlmostEqual(d["derived_only_jobs"]["median"], 8.34 * 10 / 80, places=2)
+
+
+class SandByName(unittest.TestCase):
+    def convert(self, rows_, **kw):
+        out = str(Path(tempfile.mkdtemp()) / "frac.csv")
+        res = ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), out, **kw)
+        with open(out) as handle:
+            return res, {r["api"]: r for r in csv.DictReader(handle)}
+
+    ROWS_HIDDEN = [row2("s", "6/1/2023", "42389490010000", "5000000", "Ingredient Container Purpose",
+                        "Crystalline silica, quartz", "6000000", "10")]
+
+    def test_typo_propant_counts(self):
+        self.assertTrue(ffz.is_proppant("Propant"))
+        self.assertFalse(ffz.is_proppant("Propane gas"))
+
+    def test_off_by_default(self):
+        _, out = self.convert(self.ROWS_HIDDEN)
+        self.assertEqual(out["42389490010000"]["proppant_lb"], "")
+
+    def test_hidden_sand_counted_by_name_and_labeled(self):
+        res, out = self.convert(self.ROWS_HIDDEN, sand_by_name=True)
+        r = out["42389490010000"]
+        self.assertEqual(float(r["proppant_lb"]), 6000000.0)
+        self.assertTrue(r["proppant_basis"].startswith("RECORD: sand-named"))
+        self.assertEqual(res["stats"]["proppant_from_sand_named_ingredient"], 1)
+
+    def test_trace_silica_below_floor_is_ignored(self):
+        rows_ = [row2("t", "6/1/2023", "42389490020000", "5000000", "Breaker", "Crystalline silica", "50", "0.0001")]
+        _, out = self.convert(rows_, sand_by_name=True)
+        self.assertEqual(out["42389490020000"]["proppant_lb"], "")
+
+    def test_silicon_dioxide_and_ceramic_names_count(self):
+        rows_ = [row2("u", "6/1/2023", "42389490030000", "5000000", "Other Ingredient(s)", "Silicon Dioxide (SiO2)", "3000000", ""),
+                 row2("v", "6/1/2023", "42389490040000", "5000000", "See Trade Name(s) List", "Ceramic proppant", "2000000", "")]
+        _, out = self.convert(rows_, sand_by_name=True)
+        self.assertEqual(float(out["42389490030000"]["proppant_lb"]), 3000000.0)
+        self.assertEqual(float(out["42389490040000"]["proppant_lb"]), 2000000.0)
+
+    def test_purpose_labeled_mass_is_preferred_over_name_rule(self):
+        rows_ = [row2("w", "6/1/2023", "42389490050000", "5000000", "Proppant", "Silica", "4000000", ""),
+                 row2("w", "6/1/2023", "42389490050000", "5000000", "Other", "Sand", "9000000", "")]
+        _, out = self.convert(rows_, sand_by_name=True)
+        r = out["42389490050000"]
+        self.assertEqual(float(r["proppant_lb"]), 4000000.0)
+        self.assertTrue(r["proppant_basis"].startswith("RECORD: sum of MassIngredient"))
+
+    def test_name_rule_beats_percent_estimate(self):
+        rows_ = [row2("x", "6/1/2023", "42389490060000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),
+                 row2("x", "6/1/2023", "42389490060000", "5000000", "Proppant", "Silica", "", "10"),
+                 row2("x", "6/1/2023", "42389490060000", "5000000", "Sand", "Quartz", "5500000", "")]
+        _, out = self.convert(rows_, sand_by_name=True, derive=True)
+        r = out["42389490060000"]
+        self.assertEqual(float(r["proppant_lb"]), 5500000.0)
+        self.assertTrue(r["proppant_basis"].startswith("RECORD: sand-named"))
+
+    def test_implausible_sand_named_mass_is_rejected(self):
+        rows_ = [row2("y", "6/1/2023", "42389490070000", "100000", "Sand", "Quartz", "9000000", "")]   # 90 lb/gal
+        res, out = self.convert(rows_, sand_by_name=True)
+        self.assertEqual(out["42389490070000"]["proppant_lb"], "")
+        self.assertEqual(res["stats"]["rejected_implausible_sand_named_proppant"], 1)
+
+    def test_brief_diagnose_validates_name_rule_against_labeled_mass(self):
+        rows_ = [row2("z", "6/1/2023", "42389490080000", "5000000", "Proppant", "Silica", "4000000", "10"),
+                 row2("z", "6/1/2023", "42389490080000", "5000000", "Other", "Quartz", "4000000", "")]   # same sand seen twice
+        res = ffz.diagnose(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), brief=True)
+        r = res["sand_name_rule_over_purpose_labeled_mass"]
+        self.assertEqual(r["n"], 1)
+        self.assertEqual(r["median"], 2.0)       # the name rule double counts here, and the diagnostic shows it
+        self.assertIn("share_all_three_methods", res["jobs_2013_to_now"])
+
+    def test_coverage_shares_split_by_method(self):
+        rows_ = [row2("a", "6/1/2023", "42389490090000", "5000000", "Proppant", "Silica", "4000000", ""),          # purpose mass
+                 row2("b", "6/1/2023", "42389490100000", "5000000", "Other", "Silica", "4000000", ""),             # name rule
+                 row2("c", "6/1/2023", "42389490110000", "5000000", "Carrier/Base Fluid", "Water", "", "80"),      # percent only
+                 row2("c", "6/1/2023", "42389490110000", "5000000", "Proppant", "Silica", "", "10"),
+                 row2("d", "6/1/2023", "42389490120000", "5000000", "Surfactant", "Water", "", "")]                # nothing
+        res = ffz.diagnose(make_zip({"FracFocusRegistry_1.csv": (HEADER2, rows_)}), brief=True)
+        w = res["jobs_2013_to_now"]
+        self.assertEqual((w["cover_recorded_by_purpose"], w["cover_added_by_sand_name_rule"], w["cover_added_by_percent_only"]), (1, 1, 1))
+        self.assertEqual(w["share_all_three_methods"], 0.75)
+
+
+class EndToEndWithCore(unittest.TestCase):
+    def test_adapter_output_joins_in_the_core(self):
+        """8-digit RRC API and 14-digit FracFocus API must meet at the same well."""
+        # the well in both files is permitted 2023-01-01, BEFORE its 2023-03-14 frac
+        dpath = write_lines([record(api_unique=f"{i:05d}", date="20230101") for i in range(30)]
+                            + [record(api_unique="45678", date="20230101")])
+        pout = str(Path(dpath).with_name("permits.csv"))
+        daf.convert(dpath, pout)
+        zpath = make_zip({"FracFocusRegistry_1.csv": (HEADER, ROWS)})
+        fout = str(Path(dpath).with_name("frac.csv"))
+        ffz.convert(zpath, fout)
+        permits, _ = core.clean_permits(core.read_csv(pout))
+        fracs, _ = core.clean_fracs(core.read_csv(fout))
+        joined, report = core.join(permits, fracs)
+        self.assertEqual(report["joined"], 1)           # only the well that exists in both files
+        self.assertEqual(joined[0]["api"], "4238945678")
+        self.assertEqual(joined[0]["county"], "REEVES")
+        self.assertEqual(joined[0]["lag_days"], 72)     # 2023-01-01 -> 2023-03-14
+
+
+class SampleJoin(unittest.TestCase):
+    def test_sample_join_prints_checkable_rows(self):
+        sj = load("sj", HERE.parent / "sample_join.py")
+        dpath = write_lines([record(api_unique=f"{i:05d}", date="20230101") for i in range(30)]
+                            + [record(api_unique="45678", date="20230101")])
+        pout = str(Path(dpath).with_name("permits.csv"))
+        daf.convert(dpath, pout)
+        fout = str(Path(dpath).with_name("frac.csv"))
+        ffz.convert(make_zip({"FracFocusRegistry_1.csv": (HEADER, ROWS)}), fout)
+        rows, report = sj.sample(core.read_csv(pout), core.read_csv(fout), county="reeves", n=10)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["permit_number"], "0912345")
+        self.assertEqual(rows[0]["lease_name"], "SMITH UNIT")
+        self.assertEqual(report["joined"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

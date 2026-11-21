@@ -8,7 +8,13 @@
     "start": "next start",
     "lint": "eslint",
     "test:open-acreage": "node --experimental-strip-types --no-warnings --test src/lib/open-acreage/__tests__/open-acreage.test.ts",
-    "oa": "node --experimental-strip-types --no-warnings scripts/open-acreage/run.ts"
+    "oa": "node --experimental-strip-types --no-warnings scripts/open-acreage/run.ts",
+    "fd": "python3 scripts/frac/run_suite.py",
+    "fd:forecast": "python3 scripts/frac/frac_forecast.py",
+    "fd:live": "python3 scripts/frac/live.py",
+    "fd:desk": "python3 scripts/frac/desk.py",
+    "fd:watch": "python3 scripts/frac/watchdog.py",
+    "test:frac": "python3 -m unittest scripts/frac/test_frac_forecast.py scripts/frac/adapters/test_adapters.py scripts/frac/test_run_suite.py scripts/frac/test_watchdog.py scripts/frac/test_live.py scripts/frac/test_desk.py"
   },
   "dependencies": {
     "next": "16.2.2",
