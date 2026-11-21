@@ -385,6 +385,120 @@ class TotalsAndTurningPoints(unittest.TestCase):
         self.assertLess(tp["model_median_abs_error"], tp["baseline_median_abs_error"])
 
 
+class DisclosureLagAndProppant(unittest.TestCase):
+    def setUp(self):
+        self.p, self.f, self.joined, _ = prepared()
+        self.d = date(2024, 6, 1)
+
+    def one(self, joined, **kw):
+        results, _ = ff.backtest(self.p, joined, self.d, self.d, opts=V2, **kw)
+        return results[0]
+
+    def poison_window(self, days):
+        out = []
+        for r in self.joined:
+            if self.d - timedelta(days=days) < r["frac_start"] <= self.d:
+                r = dict(r, water_gal=9e12, proppant_lb=9e12, lag_days=1)
+            out.append(r)
+        return out
+
+    def test_fracs_inside_the_delay_window_cannot_reach_the_model_or_baseline(self):
+        base = self.one(self.joined, disclosure_lag_days=45)
+        again = self.one(self.poison_window(45), disclosure_lag_days=45)
+        self.assertEqual(base["pred_total"], again["pred_total"])
+        self.assertEqual(base["baseline_total"], again["baseline_total"])
+
+    def test_without_a_delay_the_same_fracs_do_reach_the_model(self):
+        base = self.one(self.joined)
+        again = self.one(self.poison_window(45))
+        self.assertNotEqual(base["pred_total"], again["pred_total"])
+
+    def test_delay_makes_just_fracked_wells_look_pending_so_the_forecast_rises(self):
+        no_lag = self.one(self.joined)["pred_total"]
+        lagged = self.one(self.joined, disclosure_lag_days=60)["pred_total"]
+        self.assertGreater(lagged, no_lag)
+
+    def test_baseline_uses_the_last_28_known_days(self):
+        res = self.one(self.joined, disclosure_lag_days=45)
+        known = self.d - timedelta(days=45)
+        recent = sum(r["water_gal"] or 0 for r in self.joined if known - timedelta(days=28) < r["frac_start"] <= known)
+        self.assertAlmostEqual(res["baseline_total"], recent / 4.0 * 13, places=3)
+
+    def test_scoring_always_uses_true_volumes(self):
+        a = self.one(self.joined)["actual_total"]
+        b = self.one(self.joined, disclosure_lag_days=90)["actual_total"]
+        self.assertEqual(a, b)
+
+    def test_proppant_metric_scores_proppant_not_water(self):
+        res = self.one(self.joined, metric="proppant")
+        self.assertEqual(res["metric"], "proppant")
+        self.assertEqual(res["actual_total"], res["actual_proppant_total"])
+        self.assertAlmostEqual(res["proppant_reporting_rate_used"], 1.0)
+        self.assertGreater(res["pred_total"] / res["actual_total"], 0.4)
+        self.assertLess(res["pred_total"] / res["actual_total"], 1.8)
+
+    def test_reporting_rate_and_scaling_when_half_the_jobs_omit_proppant(self):
+        half = [dict(r, proppant_lb=None) if i % 2 else r for i, r in enumerate(self.joined)]
+        res = self.one(half, metric="proppant")
+        full = self.one(self.joined, metric="proppant")
+        self.assertAlmostEqual(res["proppant_reporting_rate_used"], 0.5, delta=0.1)
+        self.assertGreater(res["pred_total"] / full["pred_total"], 0.35)       # scaled to RECORDED pounds
+        self.assertLess(res["pred_total"] / full["pred_total"], 0.65)
+
+    def test_reporting_rate_uses_only_recent_known_fracs(self):
+        saved = ff.COVERAGE_DAYS
+        ff.COVERAGE_DAYS = 120                       # a short window, so "recent" is clearly different from "all history"
+        try:
+            cut = self.d - timedelta(days=120)
+            old_unknown = [dict(r, proppant_lb=None) if r["frac_start"] <= cut else r for r in self.joined]
+            res = self.one(old_unknown, metric="proppant")
+            self.assertAlmostEqual(res["proppant_reporting_rate_used"], 1.0, delta=0.05)
+            all_history = sum(1 for r in old_unknown if r["frac_start"] <= self.d and r["proppant_lb"]) / \
+                sum(1 for r in old_unknown if r["frac_start"] <= self.d)
+            self.assertLess(all_history, 0.7)        # so ignoring recency would have given a very different rate
+        finally:
+            ff.COVERAGE_DAYS = saved
+
+    def test_proppant_baseline_is_the_last_28_known_days_of_proppant(self):
+        res = self.one(self.joined, metric="proppant", disclosure_lag_days=30)
+        known = self.d - timedelta(days=30)
+        recent = sum(r["proppant_lb"] or 0 for r in self.joined if known - timedelta(days=28) < r["frac_start"] <= known)
+        self.assertAlmostEqual(res["baseline_total"], recent / 4.0 * 13, places=3)
+
+    def test_explain_is_refused_for_proppant_and_bad_metric_rejected(self):
+        with self.assertRaises(ValueError):
+            ff.backtest(self.p, self.joined, self.d, self.d, explain=True, metric="proppant")
+        with self.assertRaises(ValueError):
+            ff.backtest(self.p, self.joined, self.d, self.d, metric="barrels")
+
+    def test_cli_accepts_metric_and_delay_and_reports_them(self):
+        import io, contextlib, csv
+        permits, fracs = world()
+        def write(rows, name):
+            path = Path(tempfile.mkdtemp()) / name
+            with open(path, "w", newline="") as h:
+                w = csv.DictWriter(h, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+            return str(path)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = ff.main(["backtest", "--permits", write(permits, "p.csv"), "--frac", write(fracs, "f.csv"),
+                          "--summary-only", "--model", "v2", "--metric", "proppant", "--disclosure-lag-days", "30"])
+        summary = json.loads(out.getvalue())["summary"]
+        self.assertEqual((summary["metric"], summary["disclosure_lag_days"]), ("proppant", 30))
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                ff.main(["backtest", "--permits", write(permits, "p2.csv"), "--frac", write(fracs, "f2.csv"),
+                         "--metric", "proppant", "--explain"])
+
+    def test_compare_counties_passes_metric_and_delay_through(self):
+        permits, _ = ff.clean_permits(world()[0])
+        fracs, _ = ff.clean_fracs(world()[1])
+        a = ff.compare_counties(permits, fracs, ["REEVES"], from_date=date(2024, 1, 1))
+        b = ff.compare_counties(permits, fracs, ["REEVES"], from_date=date(2024, 1, 1),
+                                metric="proppant", disclosure_lag_days=60)
+        self.assertNotEqual(a["REEVES"]["v2"], b["REEVES"]["v2"])
+
+
 class CompareCounties(unittest.TestCase):
     def build(self):
         a_permits, a_fracs = world(seed=7, county="REEVES")

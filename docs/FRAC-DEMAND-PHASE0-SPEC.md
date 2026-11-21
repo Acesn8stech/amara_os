@@ -180,3 +180,20 @@ stop and report at each gate.
 - Pending: the baseline's 13-week total error, and turning-point windows, now measured by `backtest`.
   Out-of-sample test: `--compare-counties` on counties never looked at during design.
 - Design caveat: v2 was designed after seeing Reeves results through 2026; Reeves is not a clean holdout.
+
+## 13. Out-of-sample county test (2026-11-21), water, no filing delay
+
+Ten Permian counties, v1 vs v2 (v2 designed on Reeves only, so the other nine are out of sample).
+
+- 13-week total, median absolute error, v2 vs trailing-average baseline: Reeves .233/.256, Loving .203/.254,
+  Midland .187/.242, Martin .182/.267, Howard .208/.349, Upton .171/.310, Culberson .241/.456, Winkler .562/.716,
+  Ward .403/.394 (tie), Pecos .737/.458 (worse). v2 better in 8 of 10; typical error ~22% lower.
+- Turning-point windows (next 13 weeks differ from the last 13 by >25%): v2 better in 9 of 10 counties, e.g.
+  Martin .201 vs .470, Howard .252 vs .524, Upton .217 vs .573. Only Pecos worse (.702 vs .675).
+- v2 improved on v1 in every county; median 13-week bias moved from -25% to -76% (v1) to within a few percent
+  in seven counties.
+- Weekly accuracy is still only a tie with the baseline. Use as a 13-week planning tool, not week by week.
+- Small / poorly matched counties fail: Pecos (36% of permits matched a frac), Winkler (60%), Ward (68%), where
+  weekly error is at or above 100% of volume. Do not trust the forecast where the permit-frac join is poor.
+- Limits: assumes every frac is known the day it starts. FracFocus filings arrive later; `--disclosure-lag-days`
+  tests this (assumed lag, not measured). Water only until `--metric proppant` results are reviewed.

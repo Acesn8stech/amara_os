@@ -66,6 +66,11 @@ which fix helps and whether it holds up on the later period. `--model v2` runs t
 was designed while looking at Reeves only, the OTHER counties are the honest out-of-sample test. Each county reports
 weekly error, 13-week total error against the trailing-average baseline, and "turning point" windows (next 13
 weeks differ from the last 13 by more than 25%), which is where a permit pipeline should beat a lagging average.
+`--disclosure-lag-days N` hides each frac from the model (and the baseline) for N days after it starts, like a real
+filing delay (the model then thinks just-fracked wells are still pending, so it over-forecasts). The default 0
+assumes every frac is known instantly, which flatters the model. Use e.g. 45 as a what-if (assumed, not measured).
+`--metric proppant` forecasts and scores RECORDED proppant pounds (use the rebuilt `frac_v2.csv`); the prediction is
+scaled by the share of recent fracs that reported a figure so it compares like with like. `--explain` is water only.
 Do not tune anything to make a gate pass. Report the numbers as printed, including "not good enough".
 
 ## Tests

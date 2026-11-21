@@ -379,17 +379,18 @@ ABLATION_VARIANTS = [
 ]
 
 
-def ablate(permits, joined, first, last, weeks=13, split_year=2022):
+def ablate(permits, joined, first, last, weeks=13, split_year=2022, metric="water", disclosure_lag_days=0):
     out = {}
     for name, opts in ABLATION_VARIANTS:
-        results, _ = backtest(permits, joined, first, last, weeks, opts=opts)
+        results, _ = backtest(permits, joined, first, last, weeks, opts=opts, metric=metric,
+                              disclosure_lag_days=disclosure_lag_days)
         out[name] = {"all_windows": quick_summary(results),
                      f"through_{split_year}": quick_summary([r for r in results if int(r["as_of"][:4]) <= split_year]),
                      f"{split_year + 1}_onward": quick_summary([r for r in results if int(r["as_of"][:4]) > split_year])}
     return out
 
 
-def compare_counties(permits, fracs, counties, weeks=13, from_date=None):
+def compare_counties(permits, fracs, counties, weeks=13, from_date=None, metric="water", disclosure_lag_days=0):
     """Run V1 and V2 on each county separately: the real out-of-sample check when the model was
     designed while looking at only one of them."""
     out = {}
@@ -407,8 +408,8 @@ def compare_counties(permits, fracs, counties, weeks=13, from_date=None):
         if first > last or (last - first).days / 30 > MAX_BACKTEST_WINDOWS:
             out[want] = {"status": "NOT_ENOUGH_HISTORY_OR_RANGE_TOO_LARGE", "permits": len(cp), "joined": len(joined)}
             continue
-        r1, _ = backtest(cp, joined, first, last, weeks, opts=V1)
-        r2, _ = backtest(cp, joined, first, last, weeks, opts=V2)
+        r1, _ = backtest(cp, joined, first, last, weeks, opts=V1, metric=metric, disclosure_lag_days=disclosure_lag_days)
+        r2, _ = backtest(cp, joined, first, last, weeks, opts=V2, metric=metric, disclosure_lag_days=disclosure_lag_days)
         out[want] = {"permits": len(cp), "joined": len(joined), "match_rate": rep_["match_rate"],
                      "v1": quick_summary(r1), "v2": quick_summary(r2)}
     return out
@@ -452,22 +453,45 @@ def classify_actuals(permits, joined, model, as_of, weeks, opts=None):
     return dict(water), dict(counts), num, den
 
 
-def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30, explain=False, opts=None):
+COVERAGE_DAYS = 730   # window for the share of fracs that report a proppant figure
+
+
+def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30, explain=False, opts=None,
+             metric="water", disclosure_lag_days=0):
+    """Replay history. metric: "water" or "proppant". disclosure_lag_days hides each frac from the MODEL
+    (and the baseline) until that many days after it starts, as a real filing delay would; the scoring
+    always uses the true volumes.
+
+    For proppant, only some jobs report pounds, so the prediction is scaled by the recent reporting rate
+    (what share of fracs in the last 24 months had a figure) to compare like with like with RECORDED pounds."""
     opts = opts or V1
+    if metric not in ("water", "proppant"):
+        raise ValueError("metric must be 'water' or 'proppant'")
+    if explain and metric != "water":
+        raise ValueError("explain is only available for the water metric")
+    field = "water_gal" if metric == "water" else "proppant_lb"
     results, d = [], first_as_of
     cause_water, cause_counts = defaultdict(float), defaultdict(int)
     ratio_num = ratio_den = 0.0
+    lag = timedelta(days=disclosure_lag_days)
     while d <= last_as_of:
-        model = fit(joined, permits, d, opts)
+        known = d - lag                                   # the latest frac start the model can know about
+        model = fit(joined, permits, known, opts)
         buckets, notes = forecast(permits, model, d, weeks, opts)
         act_w, act_p = actual_by_week(joined, d, weeks)
-        pred_w = [b["water_gal"] for b in buckets]
-        # Naive baseline: the last 28 days' actual daily average, repeated every week.
-        recent = sum(r["water_gal"] or 0.0 for r in joined
-                     if d - timedelta(days=28) < r["frac_start"] <= d)
+        coverage = None
+        if metric == "water":
+            act_w_series, pred_w = act_w, [b["water_gal"] for b in buckets]
+        else:
+            vis = [r for r in joined if known - timedelta(days=COVERAGE_DAYS) < r["frac_start"] <= known]
+            coverage = (sum(1 for r in vis if r["proppant_lb"]) / len(vis)) if vis else 1.0
+            act_w_series, pred_w = act_p, [b["proppant_lb"] * coverage for b in buckets]
+        act_w_main = act_w_series
+        # Naive baseline: the last 28 days of KNOWN volume, as a daily average, repeated every week.
+        recent = sum(r[field] or 0.0 for r in joined if known - timedelta(days=28) < r["frac_start"] <= known)
         base_w = [recent / 4.0] * weeks
-        prior_actual = sum(r["water_gal"] or 0.0 for r in joined
-                           if d - timedelta(weeks=weeks) < r["frac_start"] <= d)
+        prior_actual = sum(r[field] or 0.0 for r in joined
+                           if d - timedelta(weeks=weeks) < r["frac_start"] <= d)   # label only: the true last 13 weeks
         if explain:
             cw, cc, n_, d_ = classify_actuals(permits, joined, model, d, weeks, opts)
             for k, v in cw.items():
@@ -476,11 +500,14 @@ def backtest(permits, joined, first_as_of, last_as_of, weeks=13, step_days=30, e
                 cause_counts[k] += v
             ratio_num += n_
             ratio_den += d_
-        results.append({"as_of": d.isoformat(),
-                        "model_wape": wape(pred_w, act_w), "baseline_wape": wape(base_w, act_w),
-                        "pred_total": sum(pred_w), "actual_total": sum(act_w),
-                        "baseline_total": sum(base_w), "prior_actual_total": prior_actual,
-                        "actual_proppant_total": sum(act_p), "notes": notes})
+        row = {"as_of": d.isoformat(), "metric": metric,
+               "model_wape": wape(pred_w, act_w_main), "baseline_wape": wape(base_w, act_w_main),
+               "pred_total": sum(pred_w), "actual_total": sum(act_w_main),
+               "baseline_total": sum(base_w), "prior_actual_total": prior_actual,
+               "actual_proppant_total": sum(act_p), "notes": notes}
+        if coverage is not None:
+            row["proppant_reporting_rate_used"] = round(coverage, 3)
+        results.append(row)
         d += timedelta(days=step_days)
     scored = [r for r in results if r["model_wape"] is not None and r["baseline_wape"] is not None]
     summary = {"windows": len(results), "scored_windows": len(scored)}
@@ -532,6 +559,10 @@ def main(argv=None):
         s.add_argument("--weeks", type=int, default=13)
     sub.choices["forecast"].add_argument("--as-of", required=True)
     sub.choices["backtest"].add_argument("--from-date", help="first as-of date (YYYY-MM-DD); default: 1 year after the first frac")
+    sub.choices["backtest"].add_argument("--metric", choices=["water", "proppant"], default="water",
+                                         help="what to forecast and score (proppant uses recorded pounds only)")
+    sub.choices["backtest"].add_argument("--disclosure-lag-days", type=int, default=0,
+                                         help="hide each frac from the model for N days after it starts (filing delay)")
     sub.choices["backtest"].add_argument("--compare-counties",
                                          help="comma-separated county names: run v1 and v2 on each (out-of-sample check)")
     sub.choices["backtest"].add_argument("--ablate", action="store_true",
@@ -550,7 +581,8 @@ def main(argv=None):
         fracs_all, _ = clean_fracs(read_csv(args.frac))
         names = [n for n in args.compare_counties.split(",") if n.strip()]
         print(json.dumps({"compare_counties": compare_counties(
-            permits_all, fracs_all, names, args.weeks, parse_date(args.from_date) if args.from_date else None)}, indent=1))
+            permits_all, fracs_all, names, args.weeks, parse_date(args.from_date) if args.from_date else None,
+            args.metric, args.disclosure_lag_days)}, indent=1))
         return 0
     permits, joined, report = _load(args)
     print("JOIN REPORT (gate G1 needs a hand re-check of 10 rows):", json.dumps(report, indent=1), file=sys.stderr)
@@ -584,11 +616,16 @@ def main(argv=None):
         print(json.dumps({"status": "NOT_ENOUGH_HISTORY",
                           "need": "at least ~1 year of fracs plus the forecast horizon"}))
         return 2
+    if args.explain and args.metric != "water":
+        sys.exit("--explain is only available with --metric water")
     if args.ablate:
-        print(json.dumps({"ablation": ablate(permits, joined, first, last, args.weeks), "join": report}, indent=1))
+        print(json.dumps({"ablation": ablate(permits, joined, first, last, args.weeks, metric=args.metric,
+                                             disclosure_lag_days=args.disclosure_lag_days), "join": report}, indent=1))
         return 0
     chosen = V2 if args.model == "v2" else V1
-    results, summary = backtest(permits, joined, first, last, args.weeks, explain=args.explain, opts=chosen)
+    results, summary = backtest(permits, joined, first, last, args.weeks, explain=args.explain, opts=chosen,
+                                metric=args.metric, disclosure_lag_days=args.disclosure_lag_days)
+    summary["metric"], summary["disclosure_lag_days"] = args.metric, args.disclosure_lag_days
     payload = {"summary": summary, "join": report}
     if not args.summary_only:
         payload["windows"] = results
