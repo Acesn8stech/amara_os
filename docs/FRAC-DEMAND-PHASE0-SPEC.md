@@ -98,3 +98,23 @@ stop and report at each gate.
 7. **Censoring.** Recent permits that simply have not been fracked yet are not "never
    completed". Completion rate uses a matured cohort (older than 540 days); lag forecasts for
    waiting permits condition on how long they have already waited.
+
+## 8. Adapters built (2026-11-21, second pass)
+
+- **Plan simplified to two sources.** Core join = RRC Horizontal Drilling Permits (DAF318) +
+  FracFocus. FracFocus carries the actual frac start date, which is better for timing than the
+  W-2/G-1 completion date; Permit Master and the completion files are optional cross-checks.
+- **DAF318 layout is documented** (manual: rrc.texas.gov/media/yi0p3f3j/horizontaldrillingpermits.pdf).
+  Real records are 354 bytes: the manual's 360 includes 6 trailing FILLER bytes the file omits.
+  The adapter accepts 354 or 360 and stops if a sample of the real file does not parse.
+- **No lateral length exists in DAF318** (only PERMIT-TOTAL-DEPTH), so `lateral_ft` is blank,
+  labeled UNKNOWN, and the core forecasts from per-WELL volumes (`per_well_fallback_permits`
+  shows how much of each week used it). Per-foot intensity is only used if a lateral is known.
+  Expect a coarser forecast than the per-foot design; a lateral-length source (e.g. FracFocus
+  TVD vs measured depth, or completion data) is a future improvement.
+- **Operator names come from the RRC permit** in the join, so FracFocus operator spelling
+  differences do not split groups.
+- **Verification status:** adapters pass 21 tests and 11/11 mutation checks, but their fixtures
+  are built from the manual and dictionary, NOT from the real files. The runtime sanity gate,
+  the header check and the 10-row hand check (`scripts/frac/sample_join.py`) are what confirm
+  them on real data. Run guide: `scripts/frac/RUN-ON-MAC.md`.

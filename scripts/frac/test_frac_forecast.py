@@ -187,6 +187,40 @@ class Forecast(unittest.TestCase):
         self.assertEqual(notes.get("overdue_no_comparable_history"), 1)
 
 
+class PerWellFallback(unittest.TestCase):
+    """RRC publishes no lateral length, so real permits will usually have lateral_ft blank."""
+    def setUp(self):
+        self.p, self.f, self.joined, _ = prepared()
+        self.as_of = date(2024, 6, 1)
+        self.model = ff.fit(self.joined, self.p, self.as_of)
+
+    def test_blank_lateral_uses_per_well_volume_and_says_so(self):
+        blank = {k: dict(v, lateral_ft=None) for k, v in self.p.items()}
+        buckets, notes = ff.forecast(blank, self.model, self.as_of)
+        self.assertTrue(any(b["water_gal"] > 0 for b in buckets))
+        self.assertTrue(any(b["proppant_lb"] > 0 for b in buckets))
+        self.assertTrue(any(b["per_well_fallback_permits"] > 0 for b in buckets))
+        self.assertGreater(notes["no_lateral_length_used_per_well_volume"], 0)
+        self.assertTrue(all(b["water_unknown_permits"] == 0 for b in buckets))
+
+    def test_known_lateral_still_uses_per_foot_model(self):
+        buckets, _ = ff.forecast(self.p, self.model, self.as_of)
+        self.assertTrue(all(b["per_well_fallback_permits"] == 0 for b in buckets))
+
+    def test_per_well_estimate_is_in_the_right_ballpark(self):
+        """Per-well median should be near the true mean volume (lateral ~10,000 ft x intensity)."""
+        values, _ = ff.pick(self.model["water_well"], "ALPHA OIL", "REEVES")
+        self.assertAlmostEqual(statistics.median(values), 10000 * 2000.0, delta=10000 * 2000.0 * 0.15)
+
+    def test_no_volume_history_at_all_stays_unknown_not_zero_filled(self):
+        joined = [dict(r, water_gal=None, proppant_lb=None) for r in self.joined]
+        model = ff.fit(joined, self.p, self.as_of)
+        blank = {k: dict(v, lateral_ft=None) for k, v in self.p.items()}
+        buckets, _ = ff.forecast(blank, model, self.as_of)
+        self.assertTrue(any(b["water_unknown_permits"] > 0 for b in buckets))
+        self.assertTrue(all(b["water_gal"] == 0 for b in buckets))
+
+
 class Backtest(unittest.TestCase):
     def test_model_beats_flat_baseline_on_wavy_synthetic_world(self):
         p, f, joined, _ = prepared()

@@ -185,7 +185,11 @@ def fit(joined, permits, as_of):
         for _, key in _levels(p["operator"], p["county"]):
             comp[key][0] += hit
             comp[key][1] += 1
-    return {"lags": lags, "water": water, "prop": prop, "completion": dict(comp),
+    # Per-WELL volumes: used when a permit has no lateral length (RRC publishes none).
+    water_well = _group(seen, lambda r: r["water_gal"] if r["water_gal"] else None)
+    prop_well = _group(seen, lambda r: r["proppant_lb"] if r["proppant_lb"] else None)
+    return {"lags": lags, "water": water, "prop": prop,
+            "water_well": water_well, "prop_well": prop_well, "completion": dict(comp),
             "seen_fracs": {r["api"] for r in seen}}
 
 
@@ -203,7 +207,8 @@ def forecast(permits, model, as_of, weeks=13):
     start = as_of
     buckets = [{"week_start": (start + timedelta(weeks=i)).isoformat(),
                 "water_gal": 0.0, "proppant_lb": 0.0, "permits": 0.0,
-                "water_unknown_permits": 0.0, "proppant_unknown_permits": 0.0}
+                "water_unknown_permits": 0.0, "proppant_unknown_permits": 0.0,
+                "per_well_fallback_permits": 0.0}
                for i in range(weeks)]
     notes = defaultdict(int)
     for p in permits.values():
@@ -227,9 +232,11 @@ def forecast(permits, model, as_of, weeks=13):
             notes["completion_rate_unknown_assumed_1"] += 1
         w_int, _ = pick(model["water"], p["operator"], p["county"])
         p_int, _ = pick(model["prop"], p["operator"], p["county"])
+        w_well, _ = pick(model["water_well"], p["operator"], p["county"])
+        p_well, _ = pick(model["prop_well"], p["operator"], p["county"])
         lateral = p["lateral_ft"]
         if not lateral:
-            notes["no_lateral_length"] += 1
+            notes["no_lateral_length_used_per_well_volume"] += 1
         days = d1 - d0 + 1
         for day in range(d0, d1 + 1):
             wk = day // 7
@@ -240,16 +247,22 @@ def forecast(permits, model, as_of, weeks=13):
             # Unknown is not zero: permits we cannot price are counted, not hidden.
             if lateral and w_int:
                 buckets[wk]["water_gal"] += share * lateral * statistics.median(w_int)
+            elif w_well:
+                buckets[wk]["water_gal"] += share * statistics.median(w_well)
+                buckets[wk]["per_well_fallback_permits"] += share
             else:
                 buckets[wk]["water_unknown_permits"] += share
             if lateral and p_int:
                 buckets[wk]["proppant_lb"] += share * lateral * statistics.median(p_int)
+            elif p_well:
+                buckets[wk]["proppant_lb"] += share * statistics.median(p_well)
             else:
                 buckets[wk]["proppant_unknown_permits"] += share
     for b in buckets:
         b["basis"] = "ESTIMATE"
         for k in ("water_gal", "proppant_lb", "permits",
-                  "water_unknown_permits", "proppant_unknown_permits"):
+                  "water_unknown_permits", "proppant_unknown_permits",
+                  "per_well_fallback_permits"):
             b[k] = round(b[k], 2)
     return buckets, dict(notes)
 
