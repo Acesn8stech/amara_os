@@ -1,5 +1,5 @@
 """Tests for desk.py. Run: python3 -m unittest scripts/frac/test_desk.py -v"""
-import contextlib, importlib.util, io, json, re, tempfile, unittest
+import contextlib, importlib.util, io, json, re, tempfile, time, unittest
 from datetime import datetime
 from pathlib import Path
 
@@ -8,7 +8,9 @@ spec = importlib.util.spec_from_file_location("desk", HERE / "desk.py")
 desk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(desk)
 
-NOW = datetime(2026, 11, 21, 14, 0, 0).timestamp()
+# "Now" is the real clock, never a hardcoded date: desk.main() reads the real clock, so a fixed date made these
+# tests pass or fail depending on the time of day and the timezone (it failed on the Mac at 13:27 PST).
+NOW = float(int(time.time()))
 iso = lambda secs_ago: datetime.fromtimestamp(NOW - secs_ago).isoformat(timespec="seconds")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -167,6 +169,21 @@ class TapeAndRecap(unittest.TestCase):
         with open(d / "live_events.jsonl", "a") as h:
             h.write("{not json\n")
         self.assertEqual(len(desk.load_state(d)["events"]), 4)
+
+
+class ClockIndependence(unittest.TestCase):
+    def test_the_fixture_clock_is_the_real_clock(self):
+        self.assertLess(abs(NOW - time.time()), 120)
+
+    def test_a_heartbeat_far_in_the_future_is_not_treated_as_healthy(self):
+        text, health, risk = frame(make_dir(heartbeat_ago=-(desk.STALE_SECONDS + 60)))
+        self.assertEqual(health, "down")
+        self.assertIn("clock", text.lower())
+        self.assertEqual(desk.exit_code(health, risk), 3)
+
+    def test_a_small_clock_difference_is_tolerated(self):
+        _, health, _ = frame(make_dir(heartbeat_ago=-5))
+        self.assertEqual(health, "up")
 
 
 class Output(unittest.TestCase):

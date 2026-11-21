@@ -239,3 +239,16 @@ Seven counties (Reeves, Loving, Midland, Martin, Howard, Upton, Culberson), v2 v
   nothing on the globe without a preview and approval.
 - Honest limits: the live service must run where the data is (the Mac); a cloud sandbox cannot reach the data sources.
   FracFocus refreshes need a person. The numbers are backtests, not live forecasts.
+
+## 17. First live start on the Mac (2026-11-21): blocked by a test bug of ours, fixed
+
+- The install into God Mode worked: only scripts/frac, docs, hermes, integration and package.json scripts changed;
+  nothing under src/ or public. Branch `claude/god-mode-frac` pushed, no PR, no force-push.
+- The live service started but its first run failed the unit-test gate. Cause: `test_desk` hardcoded "now" as
+  14:00 on a fixed date while `desk.main` reads the real clock, so the test passed or failed by time of day and
+  timezone (it failed at 13:27 PST). Fixed: the fixture clock is the real clock; the full suite now passes in five
+  timezones. The gate itself behaved correctly: it refused to produce numbers from code whose tests were failing.
+- Also fixed: a heartbeat far in the future is now FEED DOWN (clock mismatch), not healthy; the STOP file is
+  one-shot (renamed to STOP.handled on stop) so a restart is not blocked; a successful run clears the service's own
+  old "stopped after failures" note.
+- No real evaluation result exists yet from the live service.

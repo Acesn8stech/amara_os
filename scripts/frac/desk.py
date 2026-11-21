@@ -142,6 +142,8 @@ def status_bar(state, now, color):
         return paint(f" STOPPED · {s} ", "inv", color) + f"  last check {age(silent) if silent is not None else '?'} ago", "down"
     if silent is not None and silent > STALE_SECONDS:
         return paint(f" FEED DOWN · no heartbeat for {age(silent)} ", "inv", color), "down"
+    if silent is not None and silent < -STALE_SECONDS:
+        return paint(f" FEED DOWN · heartbeat is {age(-silent)} in the future: clock mismatch ", "inv", color), "down"
     dot = paint("● LIVE", "green", color)
     started = parse_iso(st.get("started_at"))
     finished = parse_iso(st.get("last_run_finished"))
