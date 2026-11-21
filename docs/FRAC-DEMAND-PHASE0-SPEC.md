@@ -3,7 +3,7 @@
 Goal: predict **where and when** frac crews will need sand and water, weeks before the
 trucks are ordered, so hauling capacity can be sold ahead of demand.
 
-Status: proposal only. Nothing here has been built or backtested. Every figure the system
+Status: core pipeline built and tested on SYNTHETIC data only (scripts/frac/). No real Reeves data has been downloaded or backtested yet. Every figure the system
 produces must carry a label: `RECORD` (taken from a source), `DERIVED` (computed from
 records) or `ESTIMATE` (model output). No guessing; unknown stays `UNKNOWN`.
 
@@ -70,3 +70,31 @@ in `inputs/MANIFEST.md` with SHA-256, as in the land builds.
 No owner names or mailing addresses are needed here. Do not ingest them. Keep this project
 separate from the land-lease work. Approvals follow the same rule: approved scope only,
 stop and report at each gate.
+
+## 7. Corrections and findings from the first build (2026-11-21)
+
+1. **Proppant is not a simple FracFocus column.** The download page describes a header
+   table (well, location, treatment date, total base fluid volume), an additives table and
+   an ingredients table with mass percentages. Proppant mass must be DERIVED from the
+   ingredient rows. Verify the real column names against the data dictionary in the
+   download before writing the adapter; do not assume them. Until then `proppant_lb` may be
+   blank and the forecast reports those permits as `proppant_unknown_permits`, never as zero.
+2. **FracFocus terms of use.** Downloading requires accepting its terms, which include
+   "data may not be altered". Scott must accept them personally; no agent should click
+   through. Aggregating or combining with other datasets is allowed.
+3. **API number formats differ.** RRC permits often carry 8 digits (county + well), FracFocus
+   carries 14. The join key is the 10-digit well API (`42` + county + well). Sidetracks and
+   multiple jobs share it, so the join uses the first job on or after the permit and reports
+   `multiple_jobs_first_used`.
+4. **Reuse, don't rebuild.** The God Mode branch already parses RRC Permit Master files
+   (cp037, fixed-width). A permits adapter should call that parser and write `permits.csv`.
+5. **Sandbox limit.** The agent sandbox cannot reach rrc.texas.gov or fracfocus.org; downloads
+   and the real backtest must run on Scott's Mac. `scripts/frac/test_frac_forecast.py` proves
+   the code, not the accuracy.
+6. **Expect weak weekly accuracy.** In a clean synthetic world where the lag and intensity
+   models are exactly right, weekly volume error (WAPE) was 0.73 against 0.86 for the flat
+   baseline. That is a ceiling for real data, not a floor. Judge usefulness on 4-week and
+   13-week totals as well as weekly, and report both honestly at gate G2.
+7. **Censoring.** Recent permits that simply have not been fracked yet are not "never
+   completed". Completion rate uses a matured cohort (older than 540 days); lag forecasts for
+   waiting permits condition on how long they have already waited.
